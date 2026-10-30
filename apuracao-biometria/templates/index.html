@@ -14,6 +14,8 @@
     <span class="eyebrow">Eleições 2026 · Boletim de Urna</span>
     <h1>Eleitores liberados sem biometria</h1>
     <p class="lede">Soma, a partir dos boletins de urna do TSE, quantos eleitores foram habilitados a votar sem a leitura da digital. Cada seção é contada uma vez.</p>
+    <p class="small print-only" id="geradoEm"></p>
+    <div class="no-print"><button class="btn ghost" type="button" id="btnImprimir">Imprimir / Salvar PDF</button></div>
   </header>
 
   <section class="stack">
@@ -21,7 +23,7 @@
     <div class="totals" id="totals"><p class="empty">Nenhum dado carregado ainda. Use uma das opções abaixo para buscar os boletins.</p></div>
   </section>
 
-  <section class="grid2">
+  <section class="grid2 no-print">
     <form class="panel stack" id="formTse">
       <h2>Buscar no TSE</h2>
       <p class="small">O servidor baixa os boletins direto do Portal de Dados Abertos e processa um estado por vez.</p>
@@ -55,7 +57,7 @@
     </form>
   </section>
 
-  <section class="stack">
+  <section class="stack no-print">
     <h2>Tarefas</h2>
     <ul class="jobs" id="jobs"><li class="empty">Nenhuma tarefa ainda.</li></ul>
   </section>
@@ -63,23 +65,23 @@
   <section class="stack">
     <div class="row">
       <h2>Por UF</h2>
-      <div class="actions">
+      <div class="actions no-print">
         <a class="btn ghost" href="/api/export.csv?nivel=uf">Exportar UFs (CSV)</a>
         <a class="btn ghost" href="/api/export.csv?nivel=municipio">Exportar municípios (CSV)</a>
       </div>
     </div>
-    <p class="small">Clique em uma linha para ver os municípios.</p>
+    <p class="small no-print">Clique em uma linha para ver os municípios.</p>
     <div class="tablebox"><table id="tabUf"></table></div>
   </section>
 
   <section class="stack" id="secMun" hidden>
-    <div class="row"><h2 id="titMun">Municípios</h2><button class="btn ghost" type="button" id="fecharMun">Fechar</button></div>
+    <div class="row"><h2 id="titMun">Municípios</h2><button class="btn ghost no-print" type="button" id="fecharMun">Fechar</button></div>
     <div class="tablebox tall"><table id="tabMun"></table></div>
   </section>
 
   <footer class="stack-sm note">
     <p>A coluna somada é identificada pelo nome no leiaute do TSE (contém BIOM, NASC, LIB ou HABIL). Em geral ela conta eleitores <em>com</em> biometria cadastrada que foram liberados sem a digital; eleitores sem cadastro biométrico podem não estar incluídos.</p>
-    <p>Enviar de novo um mesmo turno e UF substitui os dados anteriores.
+    <p class="no-print">Enviar de novo um mesmo turno e UF substitui os dados anteriores.
       <button type="button" class="link danger" id="btnLimpar">Apagar todos os resultados</button>
       <span id="confLimpar" hidden> Confirmar? <button type="button" class="link danger" id="simLimpar">Sim, apagar</button> · <button type="button" class="link" id="naoLimpar">Cancelar</button></span>
     </p>
