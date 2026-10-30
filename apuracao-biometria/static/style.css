@@ -69,4 +69,5 @@ tbody tr.click{cursor:pointer}
 tbody tr.click:hover{background:var(--accent-soft)}
 tfoot td{font-weight:600}
 .note{border-left:3px solid var(--line);padding-left:12px;color:var(--muted);font-size:.88rem}
+.credito{margin:0;padding-top:16px;border-top:1px solid var(--line);font-size:.82rem;color:var(--muted);text-align:center;max-width:none}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
