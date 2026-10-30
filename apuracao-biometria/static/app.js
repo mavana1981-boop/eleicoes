@@ -151,5 +151,10 @@ $("btnLimpar").onclick = () => $("confLimpar").hidden = false;
 $("naoLimpar").onclick = () => $("confLimpar").hidden = true;
 $("simLimpar").onclick = async () => { await api("/api/limpar", {method: "POST"}); $("confLimpar").hidden = true; carregarResumo(); };
 
+// ------------------------------------------------ impressão / PDF
+function carimbarData() { $("geradoEm").textContent = "Relatório gerado em " + new Date().toLocaleString("pt-BR"); }
+window.addEventListener("beforeprint", carimbarData);
+$("btnImprimir").onclick = () => { carimbarData(); window.print(); };
+
 carregarResumo().catch(console.error);
 ciclo();

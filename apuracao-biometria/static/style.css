@@ -71,3 +71,29 @@ tfoot td{font-weight:600}
 .note{border-left:3px solid var(--line);padding-left:12px;color:var(--muted);font-size:.88rem}
 .credito{margin:0;padding-top:16px;border-top:1px solid var(--line);font-size:.82rem;color:var(--muted);text-align:center;max-width:none}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+/* ---------- impressão / PDF ---------- */
+.print-only{display:none}
+@media print{
+  :root{--bg:#fff;--surface:#fff;--ink:#111;--muted:#555;--line:#ccc;--accent:#0f5e3c;--accent-soft:#eef5f1;color-scheme:light}
+  @page{size:A4;margin:14mm 12mm}
+  body{background:#fff;color:var(--ink);font-size:11pt}
+  .wrap{max-width:none;padding:0;gap:18px}
+  .no-print,#secMun[hidden]{display:none!important}
+  .print-only{display:block!important}
+  h1{font-size:18pt}
+  .totals{grid-template-columns:repeat(2,1fr)}
+  .turno{break-inside:avoid;border-color:var(--line)}
+  .turno .big{font-size:20pt}
+  .tablebox,.tablebox.tall{overflow:visible;max-height:none;border:0;border-radius:0}
+  table{font-size:9pt}
+  th,td{padding:4px 8px}
+  th{position:static}
+  thead{display:table-header-group}
+  tfoot{display:table-footer-group}
+  tr{break-inside:avoid}
+  tbody tr.click:hover{background:none}
+  section{break-inside:auto}
+  #secMun{break-before:page}
+  a{color:inherit;text-decoration:none}
+}
