@@ -74,6 +74,25 @@ class TesteProcessador(unittest.TestCase):
         self.assertIn("BRASÍLIA", csvtxt)
         self.assertEqual(c.get("/").status_code, 200)
 
+        # cada processamento vira uma rodada arquivada
+        rodadas = c.get("/api/rodadas").get_json()
+        self.assertEqual(len(rodadas), 1)
+        rid = rodadas[0]["id"]
+        self.assertEqual(rodadas[0]["totais"][0]["valor"], 20)
+        self.assertIn(f"Rodada #{rid}", tarefa["mensagem"])
+
+        # apagar os resultados atuais não apaga o arquivo
+        c.post("/api/limpar")
+        self.assertEqual(c.get("/api/resumo").get_json()["por_turno"], [])
+        arq = c.get(f"/api/resumo?rodada={rid}").get_json()
+        self.assertEqual(arq["por_turno"][0]["valor"], 20)
+        mun = c.get(f"/api/municipios?rodada={rid}&turno=2&uf=DF").get_json()
+        self.assertEqual(mun[0]["valor"], 20)
+        self.assertIn(f"rodada{rid}", c.get(f"/api/export.csv?rodada={rid}").headers["Content-Disposition"])
+
+        c.delete(f"/api/rodadas/{rid}")
+        self.assertEqual(c.get("/api/rodadas").get_json(), [])
+
 
 if __name__ == "__main__":
     unittest.main()
