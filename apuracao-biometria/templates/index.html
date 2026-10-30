@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apuração Sem Biometria</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="wrap">
+  <header class="stack-sm">
+    <span class="eyebrow">Eleições 2026 · Boletim de Urna</span>
+    <h1>Eleitores liberados sem biometria</h1>
+    <p class="lede">Soma, a partir dos boletins de urna do TSE, quantos eleitores foram habilitados a votar sem a leitura da digital. Cada seção é contada uma vez.</p>
+  </header>
+
+  <section class="stack">
+    <div class="row"><h2>Total por turno</h2><span id="atualizado" class="small"></span></div>
+    <div class="totals" id="totals"><p class="empty">Nenhum dado carregado ainda. Use uma das opções abaixo para buscar os boletins.</p></div>
+  </section>
+
+  <section class="grid2">
+    <form class="panel stack" id="formTse">
+      <h2>Buscar no TSE</h2>
+      <p class="small">O servidor baixa os boletins direto do Portal de Dados Abertos e processa um estado por vez.</p>
+      <fieldset class="stack-sm">
+        <legend class="label">Turno</legend>
+        <div class="chips">
+          <label class="chip"><input type="checkbox" name="turno" value="1"> 1º turno</label>
+          <label class="chip"><input type="checkbox" name="turno" value="2" checked> 2º turno</label>
+        </div>
+      </fieldset>
+      <fieldset class="stack-sm">
+        <legend class="label">Estados <button type="button" class="link" id="marcarTodas">marcar todos</button> · <button type="button" class="link" id="limparUfs">limpar</button></legend>
+        <div class="chips ufs" id="ufs"></div>
+        <span class="small">Nenhum marcado = todos (inclui ZZ, exterior).</span>
+      </fieldset>
+      <button class="btn" type="submit" id="btnTse">Buscar e processar</button>
+      <span class="msg" id="msgTse" role="status"></span>
+    </form>
+
+    <form class="panel stack" id="formUp">
+      <h2>Enviar arquivo</h2>
+      <p class="small">Para quando você já tem o <span class="mono">bweb_*.zip</span> ou o CSV. O envio é feito em partes de 8 MB, então arquivos acima de 1 GB funcionam.</p>
+      <label class="drop" id="drop" for="arquivo">
+        <strong id="dropTxt">Escolha ou arraste o arquivo</strong>
+        <span class="small">.zip ou .csv do Boletim de Urna</span>
+        <input id="arquivo" type="file" accept=".zip,.csv">
+      </label>
+      <div class="bar" hidden id="upBarBox"><i id="upBar"></i></div>
+      <button class="btn" type="submit" id="btnUp" disabled>Enviar e processar</button>
+      <span class="msg" id="msgUp" role="status"></span>
+    </form>
+  </section>
+
+  <section class="stack">
+    <h2>Tarefas</h2>
+    <ul class="jobs" id="jobs"><li class="empty">Nenhuma tarefa ainda.</li></ul>
+  </section>
+
+  <section class="stack">
+    <div class="row">
+      <h2>Por UF</h2>
+      <div class="actions">
+        <a class="btn ghost" href="/api/export.csv?nivel=uf">Exportar UFs (CSV)</a>
+        <a class="btn ghost" href="/api/export.csv?nivel=municipio">Exportar municípios (CSV)</a>
+      </div>
+    </div>
+    <p class="small">Clique em uma linha para ver os municípios.</p>
+    <div class="tablebox"><table id="tabUf"></table></div>
+  </section>
+
+  <section class="stack" id="secMun" hidden>
+    <div class="row"><h2 id="titMun">Municípios</h2><button class="btn ghost" type="button" id="fecharMun">Fechar</button></div>
+    <div class="tablebox tall"><table id="tabMun"></table></div>
+  </section>
+
+  <footer class="stack-sm note">
+    <p>A coluna somada é identificada pelo nome no leiaute do TSE (contém BIOM, NASC, LIB ou HABIL). Em geral ela conta eleitores <em>com</em> biometria cadastrada que foram liberados sem a digital; eleitores sem cadastro biométrico podem não estar incluídos.</p>
+    <p>Enviar de novo um mesmo turno e UF substitui os dados anteriores.
+      <button type="button" class="link danger" id="btnLimpar">Apagar todos os resultados</button>
+      <span id="confLimpar" hidden> Confirmar? <button type="button" class="link danger" id="simLimpar">Sim, apagar</button> · <button type="button" class="link" id="naoLimpar">Cancelar</button></span>
+    </p>
+  </footer>
+</div>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
