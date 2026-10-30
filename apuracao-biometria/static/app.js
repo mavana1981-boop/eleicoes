@@ -19,15 +19,38 @@ $("ufs").innerHTML = UFS.map(u => `<label class="chip"><input type="checkbox" na
 $("marcarTodas").onclick = () => document.querySelectorAll("[name=uf]").forEach(c => c.checked = true);
 $("limparUfs").onclick = () => document.querySelectorAll("[name=uf]").forEach(c => c.checked = false);
 
+// ------------------------------------------------ rodada em exibição
+let rodadaAtual = null;   // null = resultados atuais; senão {id, criado, descricao}
+const qs = (extra = "") => {
+  const p = new URLSearchParams(extra);
+  if (rodadaAtual) p.set("rodada", rodadaAtual.id);
+  const t = p.toString();
+  return t ? "?" + t : "";
+};
+const dataBR = iso => new Date(iso).toLocaleString("pt-BR");
+
+function verRodada(r) {
+  rodadaAtual = r;
+  $("banner").hidden = !r;
+  if (r) $("bannerTxt").textContent = `Você está vendo a rodada #${r.id} de ${dataBR(r.criado)} · ${r.descricao}`;
+  $("expUf").href = "/api/export.csv" + qs("nivel=uf");
+  $("expMun").href = "/api/export.csv" + qs("nivel=municipio");
+  $("secMun").hidden = true;
+  carregarResumo();
+  carregarRodadas();
+  window.scrollTo({top: 0, behavior: "smooth"});
+}
+$("voltarAtual").onclick = () => verRodada(null);
+
 // ------------------------------------------------ resumo
 async function carregarResumo() {
-  const {por_turno, por_uf} = await api("/api/resumo");
+  const {por_turno, por_uf} = await api("/api/resumo" + qs());
   const colunas = [...new Set(por_turno.map(r => r.coluna))];
   const principal = colunas[0];
   const turnos = [...new Set(por_turno.map(r => r.turno))].sort();
   if (!turnos.length) {
-    $("totals").innerHTML = `<p class="empty">Nenhum dado carregado ainda. Use uma das opções abaixo para buscar os boletins.</p>`;
-    $("tabUf").innerHTML = ""; $("atualizado").textContent = ""; return;
+    $("totals").innerHTML = `<p class="empty">${rodadaAtual ? "Esta rodada não tem dados." : "Nenhum dado carregado ainda. Use uma das opções abaixo para buscar os boletins."}</p>`;
+    $("porUf").innerHTML = ""; $("atualizado").textContent = ""; return;
   }
   $("totals").innerHTML = turnos.map(t => {
     const linhas = por_turno.filter(r => r.turno === t);
@@ -41,32 +64,69 @@ async function carregarResumo() {
     </div>`;
   }).join("");
   const datas = por_uf.map(r => r.atualizado).sort();
-  $("atualizado").textContent = datas.length ? "Atualizado em " + new Date(datas.at(-1)).toLocaleString("pt-BR") : "";
+  $("atualizado").textContent = datas.length ? (rodadaAtual ? `Rodada #${rodadaAtual.id} · ` : "Atualizado em ") + dataBR(datas.at(-1)) : "";
 
-  // tabela por UF (coluna principal)
-  const rows = por_uf.filter(r => r.coluna === principal);
-  const tot = {};
-  rows.forEach(r => { const t = tot[r.turno] ??= {s: 0, c: 0, v: 0}; t.s += r.secoes; t.c += r.comparecimento; t.v += r.valor; });
-  $("tabUf").innerHTML = `<thead><tr><th class="l">Turno</th><th class="l">UF</th><th>Seções</th><th>Comparecimento</th><th>Sem biometria</th><th>%</th></tr></thead>
-    <tbody>${rows.map(r => `<tr class="click" data-t="${r.turno}" data-uf="${r.uf}" tabindex="0">
-      <td class="l">${r.turno}º</td><td class="l">${r.uf}</td><td>${fmt(r.secoes)}</td><td>${fmt(r.comparecimento)}</td><td>${fmt(r.valor)}</td><td>${pct(r.valor, r.comparecimento)}</td></tr>`).join("")}</tbody>
-    <tfoot>${Object.entries(tot).map(([t, x]) => `<tr><td class="l">${t}º</td><td class="l">Total</td><td>${fmt(x.s)}</td><td>${fmt(x.c)}</td><td>${fmt(x.v)}</td><td>${pct(x.v, x.c)}</td></tr>`).join("")}</tfoot>`;
-  $("tabUf").dataset.col = principal;
+  // uma tabela por turno (coluna principal)
+  $("porUf").innerHTML = turnos.map(t => {
+    const rows = por_uf.filter(r => r.coluna === principal && r.turno === t);
+    const x = rows.reduce((a, r) => ({s: a.s + r.secoes, c: a.c + r.comparecimento, v: a.v + r.valor}), {s: 0, c: 0, v: 0});
+    return `<div class="bloco-turno">
+      <h3>${t}º turno</h3>
+      <div class="tablebox"><table data-col="${esc(principal)}">
+        <thead><tr><th class="l">UF</th><th>Seções</th><th>Comparecimento</th><th>Sem biometria</th><th>%</th></tr></thead>
+        <tbody>${rows.map(r => `<tr class="click" data-t="${r.turno}" data-uf="${r.uf}" tabindex="0">
+          <td class="l">${r.uf}</td><td>${fmt(r.secoes)}</td><td>${fmt(r.comparecimento)}</td><td>${fmt(r.valor)}</td><td>${pct(r.valor, r.comparecimento)}</td></tr>`).join("")}</tbody>
+        <tfoot><tr><td class="l">Total ${t}º turno</td><td>${fmt(x.s)}</td><td>${fmt(x.c)}</td><td>${fmt(x.v)}</td><td>${pct(x.v, x.c)}</td></tr></tfoot>
+      </table></div>
+    </div>`;
+  }).join("");
 }
 
-$("tabUf").addEventListener("click", e => abrirMun(e.target.closest("tr.click")));
-$("tabUf").addEventListener("keydown", e => { if (e.key === "Enter") abrirMun(e.target.closest("tr.click")); });
+$("porUf").addEventListener("click", e => abrirMun(e.target.closest("tr.click")));
+$("porUf").addEventListener("keydown", e => { if (e.key === "Enter") abrirMun(e.target.closest("tr.click")); });
 async function abrirMun(tr) {
   if (!tr) return;
-  const {t, uf} = tr.dataset, col = $("tabUf").dataset.col;
-  const linhas = (await api(`/api/municipios?turno=${t}&uf=${uf}`)).filter(r => r.coluna === col);
-  $("titMun").textContent = `Municípios · ${uf} · ${t}º turno`;
+  const {t, uf} = tr.dataset, col = tr.closest("table").dataset.col;
+  const linhas = (await api("/api/municipios" + qs(`turno=${t}&uf=${uf}`))).filter(r => r.coluna === col);
+  $("titMun").textContent = `Municípios · ${uf} · ${t}º turno` + (rodadaAtual ? ` · rodada #${rodadaAtual.id}` : "");
   $("tabMun").innerHTML = `<thead><tr><th class="l">Município</th><th>Seções</th><th>Comparecimento</th><th>Sem biometria</th><th>%</th></tr></thead>
     <tbody>${linhas.map(r => `<tr><td class="l">${esc(r.nm_municipio || r.cd_municipio)}</td><td>${fmt(r.secoes)}</td><td>${fmt(r.comparecimento)}</td><td>${fmt(r.valor)}</td><td>${pct(r.valor, r.comparecimento)}</td></tr>`).join("")}</tbody>`;
   $("secMun").hidden = false;
   $("secMun").scrollIntoView({behavior: "smooth"});
 }
 $("fecharMun").onclick = () => $("secMun").hidden = true;
+
+// ------------------------------------------------ rodadas arquivadas
+let rodadasCache = [];
+async function carregarRodadas() {
+  rodadasCache = await api("/api/rodadas");
+  $("rodadas").innerHTML = rodadasCache.length ? rodadasCache.map(r => {
+    const cols = [...new Set(r.totais.map(t => t.coluna))];
+    const resumo = r.totais.filter(t => t.coluna === cols[0])
+      .map(t => `${t.turno}º turno: ${fmt(t.valor)} (${pct(t.valor, t.comparecimento)}, ${t.ufs} UFs)`).join(" · ");
+    return `<li class="rodada${rodadaAtual?.id === r.id ? " ativa" : ""}" data-id="${r.id}">
+      <span class="desc">#${r.id} · ${dataBR(r.criado)} · ${esc(r.descricao)}</span>
+      <span class="info">${resumo || "sem dados"}</span>
+      <span class="acoes">
+        <button type="button" class="btn ghost" data-acao="ver">${rodadaAtual?.id === r.id ? "Em exibição" : "Ver"}</button>
+        <button type="button" class="link danger" data-acao="excluir">Excluir</button>
+        <span data-conf hidden>Excluir mesmo? <button type="button" class="link danger" data-acao="sim">Sim</button> · <button type="button" class="link" data-acao="nao">Não</button></span>
+      </span></li>`;
+  }).join("") : `<li class="empty">Nenhuma rodada arquivada ainda.</li>`;
+}
+$("rodadas").addEventListener("click", async e => {
+  const b = e.target.closest("[data-acao]"); if (!b) return;
+  const li = b.closest(".rodada"), id = Number(li.dataset.id);
+  const conf = li.querySelector("[data-conf]");
+  const acao = b.dataset.acao;
+  if (acao === "ver") verRodada(rodadasCache.find(r => r.id === id));
+  else if (acao === "excluir") conf.hidden = false;
+  else if (acao === "nao") conf.hidden = true;
+  else if (acao === "sim") {
+    await api(`/api/rodadas/${id}`, {method: "DELETE"});
+    if (rodadaAtual?.id === id) verRodada(null); else carregarRodadas();
+  }
+});
 
 // ------------------------------------------------ tarefas
 let ativo = false, ultimoEstado = "";
@@ -78,7 +138,7 @@ async function carregarTarefas() {
       ${t.status === "executando" ? `<div class="bar"><i style="width:${(t.progresso * 100).toFixed(1)}%"></i></div>` : ""}
       <span class="info">${esc(t.mensagem)}</span></li>`).join("") : `<li class="empty">Nenhuma tarefa ainda.</li>`;
   const estado = ts.map(t => t.id + t.status).join();
-  if (estado !== ultimoEstado) { ultimoEstado = estado; carregarResumo(); }
+  if (estado !== ultimoEstado) { ultimoEstado = estado; carregarResumo(); carregarRodadas(); }
 }
 async function ciclo() {
   try { await carregarTarefas(); } catch (e) { console.error(e); }
@@ -152,9 +212,13 @@ $("naoLimpar").onclick = () => $("confLimpar").hidden = true;
 $("simLimpar").onclick = async () => { await api("/api/limpar", {method: "POST"}); $("confLimpar").hidden = true; carregarResumo(); };
 
 // ------------------------------------------------ impressão / PDF
-function carimbarData() { $("geradoEm").textContent = "Relatório gerado em " + new Date().toLocaleString("pt-BR"); }
+function carimbarData() {
+  $("geradoEm").textContent = "Relatório gerado em " + new Date().toLocaleString("pt-BR") +
+    (rodadaAtual ? ` · Rodada #${rodadaAtual.id} de ${dataBR(rodadaAtual.criado)} (${rodadaAtual.descricao})` : " · Resultados atuais");
+}
 window.addEventListener("beforeprint", carimbarData);
 $("btnImprimir").onclick = () => { carimbarData(); window.print(); };
 
 carregarResumo().catch(console.error);
+carregarRodadas().catch(console.error);
 ciclo();

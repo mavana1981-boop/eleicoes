@@ -8,7 +8,8 @@ Painel que soma, a partir dos **Boletins de Urna** publicados pelo TSE, quantos 
 - **Enviar arquivo**: para quando você já tem o ZIP/CSV. O navegador envia em partes de 8 MB (com nova tentativa automática), então arquivos de vários GB funcionam.
 - Cada seção aparece no CSV em várias linhas (uma por candidato/cargo). O app conta **um valor por seção** e soma por município, UF e turno.
 - A coluna de liberação sem digital é detectada pelo nome (começa com `QT_` e contém `BIOM`, `NASC`, `LIB` ou `HABIL`), porque o leiaute muda entre eleições. Se nenhuma for encontrada, a tarefa mostra a lista de colunas do arquivo.
-- Processar de novo um mesmo turno + UF substitui o resultado anterior.
+- Processar de novo um mesmo turno + UF substitui o resultado **atual**, mas cada busca ou envio concluído fica guardado como **rodada arquivada**. No painel, "Ver" abre a rodada (totais, tabelas, municípios, CSV e PDF daquela rodada) e "Excluir" a remove. Na primeira execução desta versão, os resultados que já existiam viram a rodada "Resultados anteriores ao arquivamento".
+- O relatório separa **1º e 2º turno**: um total e uma tabela por UF para cada turno; na impressão, cada turno começa em página nova.
 - Exporta CSV por UF ou por município (separador `;`, abre direto no Excel).
 
 ## Rodar localmente

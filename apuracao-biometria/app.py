@@ -44,11 +44,19 @@ def _executar(tid, job):
 
     db.atualizar_tarefa(tid, status="executando", progresso=0, mensagem="iniciando")
     resumo = []
+    rodada = {"id": None}
+
+    def salvar(linhas, origem):
+        # a rodada só é criada quando há o primeiro resultado (tarefa com erro não gera rodada vazia)
+        if rodada["id"] is None:
+            rodada["id"] = db.nova_rodada(tid, job.get("descricao", ""))
+        return db.salvar_resultados(linhas, origem, rodada["id"])
+
     if job["tipo"] == "arquivo":
         caminho = job["caminho"]
         try:
             cols, secoes = processor.ler_secoes(caminho, prog)
-            pares = db.salvar_resultados(processor.agregar_por_municipio(cols, secoes), job["nome"])
+            pares = salvar(processor.agregar_por_municipio(cols, secoes), job["nome"])
             resumo.append(", ".join(f"{t}ºT {u}" for t, u in pares))
         finally:
             if os.path.exists(caminho):
@@ -66,12 +74,13 @@ def _executar(tid, job):
             try:
                 tse.baixar(a["url"], destino, lambda f, t: prog(base + fatia * 0.5 * f, f"{rotulo}: {t}"))
                 cols, secoes = processor.ler_secoes(destino, lambda f, t: prog(base + fatia * (0.5 + 0.5 * f), f"{rotulo}: {t}"))
-                db.salvar_resultados(processor.agregar_por_municipio(cols, secoes), a["nome"])
+                salvar(processor.agregar_por_municipio(cols, secoes), a["nome"])
                 resumo.append(f"{a['turno']}ºT {a['uf']}")
             finally:
                 if os.path.exists(destino):
                     os.remove(destino)
-    db.atualizar_tarefa(tid, status="concluída", progresso=1, mensagem="Atualizado: " + ", ".join(resumo))
+    db.atualizar_tarefa(tid, status="concluída", progresso=1,
+                        mensagem=f"Rodada #{rodada['id']} arquivada · " + ", ".join(resumo))
 
 
 def _trabalhador():
@@ -90,6 +99,7 @@ threading.Thread(target=_trabalhador, daemon=True).start()
 
 
 def enfileirar(descricao, job):
+    job["descricao"] = descricao
     tid = db.nova_tarefa(descricao)
     fila.put((tid, job))
     return tid
@@ -106,26 +116,59 @@ def health():
     return {"ok": True}
 
 
+def fonte():
+    """Tabela consultada: resultados atuais ou uma rodada arquivada (?rodada=N)."""
+    rid = request.args.get("rodada", "").strip()
+    if rid:
+        if not rid.isdigit():
+            abort(400, "Rodada inválida.")
+        return "rodada_resultados WHERE rodada_id=?", (int(rid),)
+    return "resultados WHERE 1=1", ()
+
+
 @app.get("/api/resumo")
 def resumo():
-    por_uf = db.consultar("""
+    src, p = fonte()
+    por_uf = db.consultar(f"""
         SELECT turno, uf, coluna, SUM(secoes) secoes, SUM(comparecimento) comparecimento,
                SUM(valor) valor, MAX(atualizado) atualizado
-        FROM resultados GROUP BY turno, uf, coluna ORDER BY turno, uf, coluna""")
-    por_turno = db.consultar("""
+        FROM {src} GROUP BY turno, uf, coluna ORDER BY turno, uf, coluna""", p)
+    por_turno = db.consultar(f"""
         SELECT turno, coluna, SUM(secoes) secoes, SUM(comparecimento) comparecimento,
                SUM(valor) valor, COUNT(DISTINCT uf) ufs
-        FROM resultados GROUP BY turno, coluna ORDER BY turno, coluna""")
+        FROM {src} GROUP BY turno, coluna ORDER BY turno, coluna""", p)
     return jsonify(por_turno=por_turno, por_uf=por_uf)
 
 
 @app.get("/api/municipios")
 def municipios():
+    src, p = fonte()
     turno, uf = request.args.get("turno", ""), request.args.get("uf", "")
-    linhas = db.consultar("""
+    linhas = db.consultar(f"""
         SELECT cd_municipio, nm_municipio, coluna, secoes, comparecimento, valor
-        FROM resultados WHERE turno=? AND uf=? ORDER BY valor DESC""", (turno, uf))
+        FROM {src} AND turno=? AND uf=? ORDER BY valor DESC""", (*p, turno, uf))
     return jsonify(linhas)
+
+
+@app.get("/api/rodadas")
+def rodadas():
+    lista = db.consultar("SELECT id, tarefa_id, descricao, criado FROM rodadas ORDER BY id DESC LIMIT 200")
+    totais = db.consultar("""
+        SELECT rodada_id, turno, coluna, SUM(valor) valor, SUM(comparecimento) comparecimento,
+               SUM(secoes) secoes, COUNT(DISTINCT uf) ufs
+        FROM rodada_resultados GROUP BY rodada_id, turno, coluna ORDER BY turno, coluna""")
+    por_id = {}
+    for t in totais:
+        por_id.setdefault(t.pop("rodada_id"), []).append(t)
+    for r in lista:
+        r["totais"] = por_id.get(r["id"], [])
+    return jsonify(lista)
+
+
+@app.delete("/api/rodadas/<int:rid>")
+def excluir_rodada(rid):
+    db.excluir_rodada(rid)
+    return {"ok": True}
 
 
 @app.get("/api/tarefas")
@@ -136,19 +179,21 @@ def tarefas():
 @app.get("/api/export.csv")
 def exportar():
     nivel = request.args.get("nivel", "uf")
+    src, p = fonte()
+    sufixo = f"_rodada{request.args['rodada']}" if request.args.get("rodada") else ""
     if nivel == "municipio":
         linhas = db.consultar("SELECT turno, uf, cd_municipio, nm_municipio, coluna, secoes, comparecimento, valor "
-                              "FROM resultados ORDER BY turno, uf, nm_municipio")
+                              f"FROM {src} ORDER BY turno, uf, nm_municipio", p)
     else:
         linhas = db.consultar("SELECT turno, uf, coluna, SUM(secoes) secoes, SUM(comparecimento) comparecimento, "
-                              "SUM(valor) valor FROM resultados GROUP BY turno, uf, coluna ORDER BY turno, uf")
+                              f"SUM(valor) valor FROM {src} GROUP BY turno, uf, coluna ORDER BY turno, uf", p)
     buf = io.StringIO()
     if linhas:
         w = csv.DictWriter(buf, fieldnames=list(linhas[0].keys()), delimiter=";")
         w.writeheader()
         w.writerows(linhas)
     return Response("﻿" + buf.getvalue(), mimetype="text/csv",
-                    headers={"Content-Disposition": f"attachment; filename=sem_biometria_{nivel}.csv"})
+                    headers={"Content-Disposition": f"attachment; filename=sem_biometria_{nivel}{sufixo}.csv"})
 
 
 @app.post("/api/limpar")
