@@ -80,6 +80,24 @@ def _executar(tid, job):
         finally:
             if caminho and os.path.exists(caminho):
                 os.remove(caminho)
+    elif job["tipo"] == "logs_tse":
+        arquivos = [a for a in tse.listar_logs()
+                    if a["turno"] in job["turnos"] and (not job["ufs"] or a["uf"] in job["ufs"])]
+        if not arquivos:
+            raise RuntimeError("Nenhum arquivo de logs correspondente ao turno e às UFs escolhidos foi encontrado no TSE.")
+        for n, a in enumerate(arquivos):
+            base, fatia = n / len(arquivos), 1 / len(arquivos)
+            rotulo = f"[{n+1}/{len(arquivos)}] logs {a['turno']}ºT {a['uf']}"
+            destino = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_{a['nome']}")
+            try:
+                tse.baixar(a["url"], destino, lambda f, t: prog(base + fatia * 0.4 * f, f"{rotulo}: {t}"))
+                sub = {"tipo": "logs_tse", "nome": a["nome"], "turno_forcado": a["turno"], "uf_forcada": a["uf"]}
+                resumo.append(_processar_logs(tid, destino, sub,
+                                              lambda f, t: prog(base + fatia * (0.4 + 0.6 * f), f"{rotulo}: {t}"),
+                                              obter_rodada))
+            finally:
+                if os.path.exists(destino):
+                    os.remove(destino)
     else:  # tse
         arquivos = [a for a in tse.listar_arquivos()
                     if a["turno"] in job["turnos"] and (not job["ufs"] or a["uf"] in job["ufs"])]
@@ -142,11 +160,11 @@ def _processar_logs(tid, caminho, job, prog, obter_rodada):
     def gerador():
         for rotulo, dados in logs.iterar_logs(caminho, TMP_DIR, nome):
             cd, zona, sec = logs.identificar_secao(rotulo)
-            uf = logs.detectar_uf(rotulo) or mapa_uf.get(cd) or job.get("uf")
+            uf = job.get("uf_forcada") or logs.detectar_uf(rotulo) or mapa_uf.get(cd) or job.get("uf")
             if not uf:
                 raise RuntimeError(f"Não foi possível identificar a UF de '{rotulo}'. "
                                    "Escolha a UF no formulário e envie de novo.")
-            turno = logs.detectar_turno(rotulo) or job.get("turno") or "2"
+            turno = job.get("turno_forcado") or logs.detectar_turno(rotulo) or job.get("turno") or "2"
             coletar = estado["coletados"] < 30
             estado["coletados"] += coletar
             yield (rotulo, dados, padroes, uf, coletar), (turno, uf, cd, zona, sec)
@@ -512,6 +530,25 @@ def logs_diagnostico():
     r = linhas[0]
     r["diagnostico"] = json.loads(r["diagnostico"])
     return jsonify(r)
+
+
+@app.get("/api/tse/logs")
+def tse_logs_disponiveis():
+    try:
+        return jsonify(tse.listar_logs())
+    except Exception as e:  # noqa: BLE001
+        return jsonify(erro=str(e)), 502
+
+
+@app.post("/api/tse/logs")
+def tse_logs_baixar():
+    dados = request.get_json(force=True) or {}
+    turnos = [str(t) for t in dados.get("turnos", ["2"]) if str(t) in ("1", "2")]
+    ufs = [u for u in dados.get("ufs", []) if u in tse.UFS]
+    if not turnos:
+        abort(400, "Escolha ao menos um turno.")
+    desc = f"Logs TSE · {'+'.join(t + 'º' for t in turnos)} turno · {', '.join(ufs) if ufs else 'todas as UFs'}"
+    return {"id": enfileirar(desc, {"tipo": "logs_tse", "turnos": turnos, "ufs": ufs})}
 
 
 @app.post("/api/logs/url")
