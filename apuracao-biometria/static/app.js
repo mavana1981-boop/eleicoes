@@ -297,6 +297,39 @@ async function abrirLogSec(tr) {
 }
 $("fecharLogSec").onclick = () => $("secLogSec").hidden = true;
 
+$("logUfs").innerHTML = UFS.map(u => `<label class="chip"><input type="checkbox" name="logUfTse" value="${u}">${u}</label>`).join("");
+$("logMarcarTodas").onclick = () => document.querySelectorAll("[name=logUfTse]").forEach(c => c.checked = true);
+$("logLimparUfs").onclick = () => document.querySelectorAll("[name=logUfTse]").forEach(c => c.checked = false);
+const marcados = nome => [...document.querySelectorAll(`[name=${nome}]:checked`)].map(c => c.value);
+
+$("formLogTse").addEventListener("submit", async e => {
+  e.preventDefault();
+  const turnos = marcados("logTurnoTse"), ufs = marcados("logUfTse");
+  if (!turnos.length) return msg($("msgLogTse"), "Marque ao menos um turno.", true);
+  $("btnLogTse").disabled = true;
+  try {
+    await api("/api/tse/logs", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({turnos, ufs})});
+    msg($("msgLogTse"), "Tarefa criada. Acompanhe em Tarefas.");
+    ativo = true; carregarTarefas();
+  } catch (err) { msg($("msgLogTse"), err.message, true); }
+  finally { $("btnLogTse").disabled = false; }
+});
+
+$("btnLogDisp").onclick = async () => {
+  $("btnLogDisp").disabled = true;
+  msg($("msgLogTse"), "Consultando o Portal de Dados Abertos…");
+  try {
+    const lista = await api("/api/tse/logs");
+    const mb = b => b ? (b / 1e6).toLocaleString("pt-BR", {maximumFractionDigits: 0}) + " MB" : "–";
+    $("tabLogDisp").innerHTML = `<thead><tr><th class="l">Turno</th><th class="l">UF</th><th class="l">Arquivo</th><th>Tamanho</th></tr></thead>
+      <tbody>${lista.map(a => `<tr><td class="l">${a.turno}º</td><td class="l">${a.uf}</td><td class="l mono">${esc(a.nome)}</td><td>${mb(a.tamanho)}</td></tr>`).join("")}</tbody>`;
+    $("logDispBox").hidden = false;
+    const porTurno = [...new Set(lista.map(a => a.turno))].sort().map(t => `${t}º turno: ${lista.filter(a => a.turno === t).length} UFs`).join(" · ");
+    msg($("msgLogTse"), `${lista.length} arquivo(s) encontrados · ${porTurno} · conjunto: ${[...new Set(lista.map(a => a.dataset))].join(", ")}`);
+  } catch (err) { $("logDispBox").hidden = true; msg($("msgLogTse"), err.message, true); }
+  finally { $("btnLogDisp").disabled = false; }
+};
+
 $("formLogUrl").addEventListener("submit", async e => {
   e.preventDefault();
   $("btnLogUrl").disabled = true;

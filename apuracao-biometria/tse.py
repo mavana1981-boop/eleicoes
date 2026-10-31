@@ -1,4 +1,4 @@
-"""Localiza e baixa os arquivos de Boletim de Urna no Portal de Dados Abertos do TSE."""
+"""Localiza e baixa no Portal de Dados Abertos do TSE os boletins de urna e os logs das urnas."""
 import os
 import re
 
@@ -46,3 +46,99 @@ def baixar(url, destino, progresso=None):
                     progresso(feito / total if total else 0,
                               f"baixando {mb:,.0f} MB".replace(",", ".") + (f" de {total/1e6:,.0f} MB".replace(",", ".") if total else ""))
     return destino
+
+
+# ---------------------------------------------------------------- logs das urnas
+ANO = os.environ.get("TSE_ANO", "2026")
+LOG_DATASETS = [d.strip() for d in os.environ.get("TSE_LOG_DATASET", "").split(",") if d.strip()]
+SEARCH = "https://dadosabertos.tse.jus.br/api/3/action/package_search"
+# conjuntos de logs que NÃO são das urnas de votação (preparação, GEDAI, transmissão, totalização)
+_EXCLUIR_DATASET = ("gedai", "preparacao", "transmissao", "totalizacao", "sistot", "justificativa")
+_SEM_ACENTO = str.maketrans("áàâãäéèêíìîóòôõöúùûüçÁÀÂÃÄÉÈÊÍÌÎÓÒÔÕÖÚÙÛÜÇ",
+                            "aaaaaeeeiiiooooouuuucAAAAAEEEIIIOOOOOUUUUC")
+_RE_UF = re.compile(r"(?:^|[^A-Z])(" + "|".join(UFS) + r")(?:[^A-Z]|$)")
+
+
+def _norm(t):
+    return (t or "").translate(_SEM_ACENTO).lower()
+
+
+def _turno_de(texto):
+    t = _norm(texto)
+    if re.search(r"segundo turno|(?:^|[^0-9a-z])2\s*(?:o|º)?\s*[-_ ]?t(?:urno)?(?:[^a-z]|$)", t):
+        return "2"
+    if re.search(r"primeiro turno|(?:^|[^0-9a-z])1\s*(?:o|º)?\s*[-_ ]?t(?:urno)?(?:[^a-z]|$)", t):
+        return "1"
+    return None
+
+
+def _uf_de(*textos):
+    for texto in textos:
+        if not texto:
+            continue
+        base = texto.rsplit("/", 1)[-1].upper()
+        inicio = re.match(r"\s*([A-Z]{2})\s*[-–]", texto.upper())  # "SP - Logs de urna ..."
+        if inicio and inicio.group(1) in UFS:
+            return inicio.group(1)
+        m = _RE_UF.search(re.sub(r"\.(ZIP|LOGJEZ)$", "", base))
+        if m:
+            return m.group(1)
+    return None
+
+
+def _eh_dataset_de_logs(pacote):
+    nome = _norm(pacote.get("name", "") + " " + pacote.get("title", ""))
+    if ANO not in nome or "log" not in nome:
+        return False
+    return not any(x in nome for x in _EXCLUIR_DATASET)
+
+
+def buscar_datasets_logs():
+    """Pacotes (com recursos) dos logs das urnas. Usa TSE_LOG_DATASET se definido; senão pesquisa o catálogo."""
+    pacotes = []
+    if LOG_DATASETS:
+        for nome in LOG_DATASETS:
+            r = _sessao.get(API, params={"id": nome}, timeout=60)
+            if r.status_code == 404:
+                raise RuntimeError(f"Conjunto '{nome}' (TSE_LOG_DATASET) não encontrado no Portal de Dados Abertos.")
+            r.raise_for_status()
+            pacotes.append(r.json()["result"])
+        return pacotes
+    vistos = set()
+    for q in (f"logs urna {ANO}", f"log urna eletronica {ANO}", f"arquivos de urna {ANO}"):
+        r = _sessao.get(SEARCH, params={"q": q, "rows": 100}, timeout=60)
+        r.raise_for_status()
+        for p in r.json()["result"].get("results", []):
+            if p["name"] not in vistos and _eh_dataset_de_logs(p):
+                vistos.add(p["name"])
+                pacotes.append(p)
+    return pacotes
+
+
+def listar_logs():
+    """Lista [{turno, uf, url, nome, dataset}] dos ZIPs de logs das urnas por UF e turno."""
+    pacotes = buscar_datasets_logs()
+    if not pacotes:
+        raise RuntimeError(f"Nenhum conjunto de logs de urna de {ANO} encontrado no Portal de Dados Abertos. "
+                           "Se o TSE já publicou com outro nome, informe-o na variável TSE_LOG_DATASET "
+                           "ou cole o link do arquivo em 'Baixar logs pelo endereço'.")
+    saida, vistos = [], set()
+    for p in pacotes:
+        turno_pacote = _turno_de(p.get("name", "")) or _turno_de(p.get("title", ""))
+        for res in p.get("resources", []):
+            url = res.get("url", "")
+            nome_res = res.get("name", "") or ""
+            arq = url.rsplit("/", 1)[-1]
+            if not arq.lower().endswith((".zip", ".logjez")) or "hash" in _norm(nome_res) or "sha" in arq.lower():
+                continue
+            uf = _uf_de(nome_res, arq)
+            turno = _turno_de(nome_res) or _turno_de(arq) or turno_pacote
+            if not uf or not turno or url in vistos:
+                continue
+            vistos.add(url)
+            saida.append({"turno": turno, "uf": uf, "url": url, "nome": arq, "dataset": p.get("name", ""),
+                          "tamanho": res.get("size")})
+    if not saida:
+        nomes = ", ".join(p.get("name", "") for p in pacotes)
+        raise RuntimeError(f"Os conjuntos encontrados ({nomes}) não têm arquivos de logs por UF e turno reconhecíveis.")
+    return sorted(saida, key=lambda a: (a["turno"], a["uf"]))

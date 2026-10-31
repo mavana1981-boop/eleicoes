@@ -123,6 +123,29 @@
       <div class="tablebox tall"><table id="tabLogSec"></table></div>
     </section>
 
+    <form class="panel stack no-print" id="formLogTse">
+      <h3>Buscar logs no TSE</h3>
+      <p class="small">O servidor procura os logs das urnas no Portal de Dados Abertos, baixa o arquivo de cada UF e processa um por vez, como na busca dos boletins. Os logs são grandes: uma UF como SP pode levar horas.</p>
+      <fieldset class="stack-sm">
+        <legend class="label">Turno</legend>
+        <div class="chips">
+          <label class="chip"><input type="checkbox" name="logTurnoTse" value="1"> 1º turno</label>
+          <label class="chip"><input type="checkbox" name="logTurnoTse" value="2" checked> 2º turno</label>
+        </div>
+      </fieldset>
+      <fieldset class="stack-sm">
+        <legend class="label">Estados <button type="button" class="link" id="logMarcarTodas">marcar todos</button> · <button type="button" class="link" id="logLimparUfs">limpar</button></legend>
+        <div class="chips ufs" id="logUfs"></div>
+        <span class="small">Nenhum marcado = todos. Comece por um estado pequeno (DF, AC, RR) para conferir os padrões de mensagem.</span>
+      </fieldset>
+      <div class="actions">
+        <button class="btn" type="submit" id="btnLogTse">Buscar e processar</button>
+        <button class="btn ghost" type="button" id="btnLogDisp">Ver arquivos disponíveis</button>
+      </div>
+      <span class="msg" id="msgLogTse" role="status"></span>
+      <div class="tablebox" id="logDispBox" hidden><table id="tabLogDisp"></table></div>
+    </form>
+
     <div class="grid2 no-print">
       <form class="panel stack" id="formLogUrl">
         <h3>Baixar logs pelo endereço</h3>
