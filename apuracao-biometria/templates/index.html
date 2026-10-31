@@ -125,7 +125,7 @@
 
     <form class="panel stack no-print" id="formLogTse">
       <h3>Buscar logs no TSE</h3>
-      <p class="small">O servidor procura os logs das urnas no Portal de Dados Abertos, baixa o arquivo de cada UF e processa um por vez, como na busca dos boletins. Os logs são grandes: uma UF como SP pode levar horas.</p>
+      <p class="small">O servidor baixa do Portal de Dados Abertos o conjunto "Arquivos transmitidos para totalização" de cada UF (logs das urnas junto com BU e RDV), lê só os logs e processa um estado por vez. Os arquivos são grandes: uma UF como SP pode levar horas.</p>
       <fieldset class="stack-sm">
         <legend class="label">Turno</legend>
         <div class="chips">

@@ -50,10 +50,13 @@ def baixar(url, destino, progresso=None):
 
 # ---------------------------------------------------------------- logs das urnas
 ANO = os.environ.get("TSE_ANO", "2026")
+# Os logs das urnas de votação são publicados junto com BU, RDV e assinaturas no conjunto
+# "Arquivos transmitidos para totalização" (ZIPs bu_imgbu_logjez_rdv_vscmr_<ano>_<n>t_<UF>.zip).
+LOG_DATASET_PADRAO = f"resultados-{ANO}-arquivos-transmitidos-para-totalizacao"
 LOG_DATASETS = [d.strip() for d in os.environ.get("TSE_LOG_DATASET", "").split(",") if d.strip()]
 SEARCH = "https://dadosabertos.tse.jus.br/api/3/action/package_search"
-# conjuntos de logs que NÃO são das urnas de votação (preparação, GEDAI, transmissão, totalização)
-_EXCLUIR_DATASET = ("gedai", "preparacao", "transmissao", "totalizacao", "sistot", "justificativa")
+# logs que NÃO são das urnas de votação (sistema de preparação/GEDAI)
+_EXCLUIR_DATASET = ("gedai", "preparacao")
 _SEM_ACENTO = str.maketrans("áàâãäéèêíìîóòôõöúùûüçÁÀÂÃÄÉÈÊÍÌÎÓÒÔÕÖÚÙÛÜÇ",
                             "aaaaaeeeiiiooooouuuucAAAAAEEEIIIOOOOOUUUUC")
 _RE_UF = re.compile(r"(?:^|[^A-Z])(" + "|".join(UFS) + r")(?:[^A-Z]|$)")
@@ -88,24 +91,27 @@ def _uf_de(*textos):
 
 def _eh_dataset_de_logs(pacote):
     nome = _norm(pacote.get("name", "") + " " + pacote.get("title", ""))
-    if ANO not in nome or "log" not in nome:
+    if ANO not in nome or not ("log" in nome or "arquivos-transmitidos" in nome or "arquivos transmitidos" in nome):
         return False
     return not any(x in nome for x in _EXCLUIR_DATASET)
 
 
 def buscar_datasets_logs():
-    """Pacotes (com recursos) dos logs das urnas. Usa TSE_LOG_DATASET se definido; senão pesquisa o catálogo."""
+    """Pacotes (com recursos) dos logs das urnas: TSE_LOG_DATASET, senão o conjunto padrão
+    "Arquivos transmitidos para totalização" e, se ele não existir, uma pesquisa no catálogo."""
     pacotes = []
-    if LOG_DATASETS:
-        for nome in LOG_DATASETS:
-            r = _sessao.get(API, params={"id": nome}, timeout=60)
-            if r.status_code == 404:
+    for nome in (LOG_DATASETS or [LOG_DATASET_PADRAO]):
+        r = _sessao.get(API, params={"id": nome}, timeout=60)
+        if r.status_code == 404:
+            if LOG_DATASETS:
                 raise RuntimeError(f"Conjunto '{nome}' (TSE_LOG_DATASET) não encontrado no Portal de Dados Abertos.")
-            r.raise_for_status()
-            pacotes.append(r.json()["result"])
+            continue
+        r.raise_for_status()
+        pacotes.append(r.json()["result"])
+    if pacotes:
         return pacotes
     vistos = set()
-    for q in (f"logs urna {ANO}", f"log urna eletronica {ANO}", f"arquivos de urna {ANO}"):
+    for q in (f"arquivos transmitidos totalizacao {ANO}", f"logs urna {ANO}", f"log urna eletronica {ANO}"):
         r = _sessao.get(SEARCH, params={"q": q, "rows": 100}, timeout=60)
         r.raise_for_status()
         for p in r.json()["result"].get("results", []):
@@ -130,6 +136,9 @@ def listar_logs():
             nome_res = res.get("name", "") or ""
             arq = url.rsplit("/", 1)[-1]
             if not arq.lower().endswith((".zip", ".logjez")) or "hash" in _norm(nome_res) or "sha" in arq.lower():
+                continue
+            # ZIPs combinados (bu_imgbu_..._rdv) só servem se incluírem logs
+            if "logjez" not in arq.lower() and "log" not in _norm(nome_res) and "transmitidos" not in _norm(nome_res + p.get("name", "")):
                 continue
             uf = _uf_de(nome_res, arq)
             turno = _turno_de(nome_res) or _turno_de(arq) or turno_pacote

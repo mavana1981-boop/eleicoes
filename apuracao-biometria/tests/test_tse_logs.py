@@ -18,19 +18,21 @@ import tse  # noqa: E402
 from test_logs import LOG_AC, LOG_DF  # noqa: E402
 
 CDN = "https://cdn.tse.jus.br/estatistica/sead/eleicoes/eleicoes2026/arqurnatot"
-PACOTES = [
-    {"name": "resultados-2026-logs-do-sistema-de-preparacao-das-urnas-eletronicas-gedai-2-turno", "title": "GEDAI",
-     "resources": [{"name": "DF - Logs GEDAI", "url": f"{CDN}/gedai_DF.zip"}]},
-    {"name": "resultados-2026-logs-de-urna", "title": "Resultados 2026 - Logs de urna",
-     "resources": [
-         {"name": "DF - Logs de urna - Segundo turno - 28.10.2026", "url": f"{CDN}/logs_DF_2t.zip", "size": 1000},
-         {"name": "DF - Hash SHA2 - Segundo turno", "url": f"{CDN}/logs_DF_2t.zip.sha512"},
-         {"name": "AC - Logs de urna - Segundo turno - 28.10.2026", "url": f"{CDN}/logs_AC_2t.zip"},
-         {"name": "AC - Logs de urna - Primeiro turno - 07.10.2026", "url": f"{CDN}/logs_AC_1t.zip"},
-         {"name": "Leia-me", "url": f"{CDN}/leiame.pdf"},
-     ]},
-]
-
+GEDAI = {"name": "resultados-2026-logs-do-sistema-de-preparacao-das-urnas-eletronicas-gedai-2-turno", "title": "GEDAI",
+         "resources": [{"name": "DF - Logs GEDAI", "url": f"{CDN}/gedai_DF.zip"}]}
+TRANSMITIDOS = {
+    "name": "resultados-2026-arquivos-transmitidos-para-totalizacao",
+    "title": "Resultados 2026 - Arquivos transmitidos para totalização",
+    "resources": [
+        {"name": "DF - Arquivos transmitidos para totalização - Segundo turno",
+         "url": f"{CDN}/bu_imgbu_logjez_rdv_vscmr_2026_2t_DF.zip", "size": 1000},
+        {"name": "AC - Arquivos transmitidos para totalização - Segundo turno",
+         "url": f"{CDN}/bu_imgbu_logjez_rdv_vscmr_2026_2t_AC.zip"},
+        {"name": "AC - Arquivos transmitidos para totalização - Primeiro turno",
+         "url": f"{CDN}/bu_imgbu_logjez_rdv_vscmr_2026_1t_AC.zip"},
+        {"name": "Leia-me", "url": f"{CDN}/leiame.pdf"},
+    ]}
+PACOTES = [GEDAI, TRANSMITIDOS]
 
 def zip_com(nome, conteudo):
     buf = io.BytesIO()
@@ -39,9 +41,20 @@ def zip_com(nome, conteudo):
     return buf.getvalue()
 
 
+def zip_urna(nome_log, log):
+    """ZIP como o do TSE: logs junto com BU, RDV e assinaturas de cada seção."""
+    buf = io.BytesIO()
+    base = nome_log.rsplit(".", 1)[0]
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr(nome_log, log)
+        for ext in ("bu", "imgbu", "rdv", "vscmr"):
+            z.writestr(f"{base}.{ext}", b"\x00\x01")
+    return buf.getvalue()
+
+
 ARQUIVOS = {
-    f"{CDN}/logs_DF_2t.zip": zip_com("o00407-9701200010010.logjez", LOG_DF),
-    f"{CDN}/logs_AC_2t.zip": zip_com("o00407-0139200080001.logjez", LOG_AC),
+    f"{CDN}/bu_imgbu_logjez_rdv_vscmr_2026_2t_DF.zip": zip_urna("o00407-9701200010010.logjez", LOG_DF),
+    f"{CDN}/bu_imgbu_logjez_rdv_vscmr_2026_2t_AC.zip": zip_urna("o00407-0139200080001.logjez", LOG_AC),
 }
 
 
@@ -69,6 +82,9 @@ class Resp:
 
 
 def falso_get(url, params=None, stream=False, timeout=None):
+    if url == tse.API:
+        pacote = {p["name"]: p for p in PACOTES}.get((params or {}).get("id"))
+        return Resp({"result": pacote}) if pacote else Resp(status=404)
     if url == tse.SEARCH:
         return Resp({"result": {"results": PACOTES}})
     if url in ARQUIVOS:
@@ -81,11 +97,25 @@ class TesteBuscaLogsTSE(unittest.TestCase):
         with mock.patch.object(tse._sessao, "get", side_effect=falso_get):
             lista = tse.listar_logs()
         self.assertEqual([(a["turno"], a["uf"], a["nome"]) for a in lista],
-                         [("1", "AC", "logs_AC_1t.zip"), ("2", "AC", "logs_AC_2t.zip"), ("2", "DF", "logs_DF_2t.zip")])
-        self.assertTrue(all(a["dataset"] == "resultados-2026-logs-de-urna" for a in lista))
+                         [("1", "AC", "bu_imgbu_logjez_rdv_vscmr_2026_1t_AC.zip"),
+                          ("2", "AC", "bu_imgbu_logjez_rdv_vscmr_2026_2t_AC.zip"),
+                          ("2", "DF", "bu_imgbu_logjez_rdv_vscmr_2026_2t_DF.zip")])
+        self.assertTrue(all(a["dataset"] == "resultados-2026-arquivos-transmitidos-para-totalizacao" for a in lista))
+
+    def test_busca_no_catalogo_se_padrao_nao_existir(self):
+        def sem_padrao(url, params=None, **kw):
+            if url == tse.API:
+                return Resp(status=404)
+            return falso_get(url, params, **kw)
+        with mock.patch.object(tse._sessao, "get", side_effect=sem_padrao):
+            self.assertEqual(len(tse.listar_logs()), 3)  # achou pela pesquisa, ignorando o GEDAI
 
     def test_sem_conjunto(self):
-        with mock.patch.object(tse._sessao, "get", return_value=Resp({"result": {"results": [PACOTES[0]]}})):
+        def so_gedai(url, params=None, **kw):
+            if url == tse.API:
+                return Resp(status=404)
+            return Resp({"result": {"results": [GEDAI]}})
+        with mock.patch.object(tse._sessao, "get", side_effect=so_gedai):
             with self.assertRaises(RuntimeError) as ctx:
                 tse.listar_logs()
         self.assertIn("TSE_LOG_DATASET", str(ctx.exception))
