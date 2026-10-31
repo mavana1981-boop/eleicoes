@@ -129,6 +129,27 @@ class TesteLogs(unittest.TestCase):
         # endereço fora do TSE é recusado
         self.assertEqual(c.post("/api/logs/url", json={"url": "https://exemplo.com/logs.zip"}).status_code, 400)
 
+    def test_inventario_quando_nao_ha_logs(self):
+        import app as appmod
+        appmod.LOG_WORKERS = 0
+        caminho = os.path.join(TMP, "bu_imgbu_logjez_rdv_vscmr_2026_2t_RR.zip")
+        with zipfile.ZipFile(caminho, "w") as z:
+            for ext in ("bu", "imgbu", "rdv", "vscmr"):
+                z.writestr(f"o00407-0301000010001.{ext}", b"x")
+        inv = {}
+        self.assertEqual(list(logs.iterar_logs(caminho, TMP, "", inv)), [])
+        texto = logs.descrever_inventario(inv)
+        self.assertIn(".rdv", texto)
+        self.assertIn("o00407-0301000010001.bu", texto)
+        self.assertTrue(logs.eh_arquivo_de_logs(caminho))
+
+    def test_outros_nomes_de_log(self):
+        self.assertTrue(logs.eh_nome_de_log("o00407-0301000010001.log"))
+        self.assertTrue(logs.eh_nome_de_log("RR/0301000010001_logd.dat"))
+        self.assertFalse(logs.eh_nome_de_log("o00407-0301000010001.rdv"))
+        self.assertFalse(logs.eh_nome_de_log("bu_imgbu_logjez_rdv_vscmr_2026_2t_RR.zip"))
+        self.assertEqual(logs.identificar_secao("RR/0301000010001_logd.dat"), ("03010", "0001", "0001"))
+
     def test_processos_paralelos(self):
         import app as appmod
         appmod.LOG_WORKERS = 2
