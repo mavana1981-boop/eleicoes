@@ -50,12 +50,18 @@
 
     <form class="panel stack" id="formUp">
       <h2>Enviar arquivo</h2>
-      <p class="small">Para quando você já tem o <span class="mono">bweb_*.zip</span> ou o CSV. O envio é feito em partes de 8 MB, então arquivos acima de 1 GB funcionam.</p>
+      <p class="small">Boletim de urna (<span class="mono">bweb_*.zip</span> ou CSV) ou logs de urna (ZIP com <span class="mono">.logjez</span>, ou um <span class="mono">.logjez</span> avulso). O tipo é detectado sozinho. O envio é feito em partes de 8 MB, então arquivos acima de 1 GB funcionam.</p>
       <label class="drop" id="drop" for="arquivo">
         <strong id="dropTxt">Escolha ou arraste o arquivo</strong>
-        <span class="small">.zip ou .csv do Boletim de Urna</span>
-        <input id="arquivo" type="file" accept=".zip,.csv">
+        <span class="small">.zip, .csv ou .logjez</span>
+        <input id="arquivo" type="file" accept=".zip,.csv,.logjez">
       </label>
+      <div class="campos">
+        <label class="campo"><span class="label">Turno (só para logs)</span>
+          <select id="upTurno"><option value="">Detectar pelo nome</option><option value="1">1º turno</option><option value="2" selected>2º turno</option></select></label>
+        <label class="campo"><span class="label">UF (só para logs)</span>
+          <select id="upUf" class="sel-uf"><option value="">Detectar</option></select></label>
+      </div>
       <div class="bar" hidden id="upBarBox"><i id="upBar"></i></div>
       <button class="btn" type="submit" id="btnUp" disabled>Enviar e processar</button>
       <span class="msg" id="msgUp" role="status"></span>
@@ -87,6 +93,70 @@
   <section class="stack" id="secMun" hidden>
     <div class="row"><h2 id="titMun">Municípios</h2><button class="btn ghost no-print" type="button" id="fecharMun">Fechar</button></div>
     <div class="tablebox tall"><table id="tabMun"></table></div>
+  </section>
+
+  <section class="stack" id="secLogs">
+    <div class="row">
+      <div class="stack-sm">
+        <span class="eyebrow">Logs de urna</span>
+        <h2>Votos registrados após as 17h</h2>
+      </div>
+      <div class="actions no-print">
+        <a class="btn ghost" id="expLogs" href="/api/logs/export.csv">Exportar seções (CSV)</a>
+      </div>
+    </div>
+    <p class="small">Conta, nos logs das urnas, os votos com registro de "voto computado" a partir das 17h e, entre eles, os de eleitores liberados sem a digital. Quem estava na fila às 17h tem direito a votar, então votos após esse horário são previstos em lei.</p>
+
+    <fieldset class="chips no-print" id="modoHora">
+      <legend class="label">Horário de corte</legend>
+      <label class="chip"><input type="radio" name="modo" value="aj" checked> 17h de Brasília (ajusta o fuso da UF)</label>
+      <label class="chip"><input type="radio" name="modo" value="br"> 17h no relógio da urna, sem ajuste</label>
+    </fieldset>
+    <p class="small print-only" id="modoPrint"></p>
+
+    <div class="totals" id="logTotals"><p class="empty">Nenhum log processado ainda. Envie um ZIP de logs em "Enviar arquivo" ou informe o endereço do arquivo no TSE abaixo.</p></div>
+    <p class="small no-print">Clique em uma UF para ver as seções com mais votos sem digital após as 17h.</p>
+    <div class="stack" id="logPorUf"></div>
+
+    <section class="stack" id="secLogSec" hidden>
+      <div class="row"><h3 id="titLogSec">Seções</h3><button class="btn ghost no-print" type="button" id="fecharLogSec">Fechar</button></div>
+      <div class="tablebox tall"><table id="tabLogSec"></table></div>
+    </section>
+
+    <div class="grid2 no-print">
+      <form class="panel stack" id="formLogUrl">
+        <h3>Baixar logs pelo endereço</h3>
+        <p class="small">Copie no Portal de Dados Abertos do TSE o link do ZIP de logs (ou de um <span class="mono">.logjez</span>) e cole aqui. O servidor baixa e processa.</p>
+        <label class="campo"><span class="label">Endereço do arquivo</span>
+          <input id="logUrl" type="url" placeholder="https://cdn.tse.jus.br/…/logs….zip" required></label>
+        <div class="campos">
+          <label class="campo"><span class="label">Turno</span>
+            <select id="logTurno"><option value="">Detectar pelo nome</option><option value="1">1º turno</option><option value="2" selected>2º turno</option></select></label>
+          <label class="campo"><span class="label">UF</span>
+            <select id="logUf" class="sel-uf"><option value="">Detectar</option></select></label>
+        </div>
+        <button class="btn" type="submit" id="btnLogUrl">Baixar e processar</button>
+        <span class="msg" id="msgLogUrl" role="status"></span>
+      </form>
+
+      <form class="panel stack" id="formPadroes">
+        <h3>Padrões de mensagem do log</h3>
+        <p class="small">O texto das mensagens muda entre versões da urna. Confira na lista abaixo se as mensagens do log estão marcadas corretamente e ajuste se preciso. Depois de mudar, processe os logs de novo.</p>
+        <label class="campo"><span class="label">Início de um novo eleitor</span><input id="padIni" class="mono" spellcheck="false"></label>
+        <label class="campo"><span class="label">Liberação sem digital</span><input id="padSem" class="mono" spellcheck="false"></label>
+        <label class="campo"><span class="label">Voto computado</span><input id="padComp" class="mono" spellcheck="false"></label>
+        <div class="actions">
+          <button class="btn" type="submit">Salvar padrões</button>
+          <button class="btn ghost" type="button" id="restaurarPad">Restaurar padrão</button>
+        </div>
+        <span class="msg" id="msgPad" role="status"></span>
+      </form>
+    </div>
+
+    <details class="panel no-print" id="diag">
+      <summary><strong>Mensagens encontradas no último processamento de logs</strong> <span class="small" id="diagInfo"></span></summary>
+      <div class="tablebox tall"><table id="tabDiag"></table></div>
+    </details>
   </section>
 
   <footer class="stack-sm note">

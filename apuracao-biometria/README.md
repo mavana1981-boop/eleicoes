@@ -12,6 +12,19 @@ Painel que soma, a partir dos **Boletins de Urna** publicados pelo TSE, quantos 
 - O relatório separa **1º e 2º turno**: um total e uma tabela por UF para cada turno; na impressão, cada turno começa em página nova.
 - Exporta CSV por UF ou por município (separador `;`, abre direto no Excel).
 
+## Votos após as 17h (logs de urna)
+
+O boletim de urna não tem horário. Para saber quantos votos foram registrados depois das 17h, o app lê os **logs das urnas** (`.logjez`), que anotam a hora de cada evento.
+
+- **Como enviar:** use "Enviar arquivo" com o ZIP de logs do Portal de Dados Abertos (ou um `.logjez` avulso), ou cole o link do arquivo em "Baixar logs pelo endereço" (só aceita endereços `tse.jus.br`). ZIPs dentro de ZIPs são abertos automaticamente.
+- **O que é contado:** cada registro de "voto computado" é um voto. Ele conta como "sem digital" se, desde o início daquele eleitor, apareceu uma mensagem de liberação pelo procedimento alternativo. O voto conta como "após as 17h" pela hora do registro de voto computado.
+- **Fuso:** a votação vai das 8h às 17h de Brasília, e a urna grava a hora local. No modo padrão o corte é ajustado por UF (AC 15h; AM, RO, RR, MT, MS 16h no relógio local). Também há o modo "17h no relógio da urna, sem ajuste". O exterior (ZZ) vota em hora local. O oeste do Amazonas e Fernando de Noronha têm fuso diferente da capital e não são ajustados.
+- **Conferência:** a tabela mostra a mediana do 1º e do último voto por UF (para checar o relógio) e o total "sem biometria" do boletim de urna ao lado do total "sem digital" dos logs. Os dois devem ficar próximos quando a UF inteira foi processada.
+- **Padrões de mensagem:** o texto das mensagens muda entre versões da urna. Os três padrões (início de eleitor, liberação sem digital, voto computado) são editáveis no painel, e cada processamento lista as mensagens mais frequentes do log, marcadas pelos padrões atuais. Na primeira vez, envie um `.logjez` de uma seção, confira as marcações e ajuste antes de processar uma UF inteira.
+- **Identificação:** zona e seção vêm do nome do arquivo (`…MMMMMZZZZSSSS.logjez`); UF e turno vêm do caminho (ex.: `logs_2t_SP.zip`) ou, se não houver, dos campos do formulário.
+- Votar depois das 17h é permitido para quem estava na fila; o número não indica irregularidade por si só.
+- Variáveis: `LOG_WORKERS` (processos em paralelo, padrão até 4) e `LOG_URL_HOSTS` (domínios aceitos no download por endereço, padrão `tse.jus.br`). Os logs de uma UF grande ocupam vários GB: use o volume em `/data`.
+
 ## Rodar localmente
 
 ```bash
@@ -46,6 +59,7 @@ python app.py
 app.py          rotas Flask, fila de tarefas, envio em partes
 processor.py    leitura em streaming dos ZIP/CSV e agregação por seção/município
 tse.py          consulta ao Portal de Dados Abertos e download
+logs.py         leitura dos logs de urna (.logjez) e contagem após as 17h
 db.py           SQLite (resultados e tarefas)
 templates/      painel
 static/         CSS e JS
