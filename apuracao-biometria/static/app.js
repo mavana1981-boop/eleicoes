@@ -35,6 +35,9 @@ function verRodada(r) {
   if (r) $("bannerTxt").textContent = `Você está vendo a rodada #${r.id} de ${dataBR(r.criado)} · ${r.descricao}`;
   $("expUf").href = "/api/export.csv" + qs("nivel=uf");
   $("expMun").href = "/api/export.csv" + qs("nivel=municipio");
+  $("expLogs").href = "/api/logs/export.csv" + qs();
+  $("secLogSec").hidden = true;
+  carregarLogs();
   $("secMun").hidden = true;
   carregarResumo();
   carregarRodadas();
@@ -102,8 +105,11 @@ async function carregarRodadas() {
   rodadasCache = await api("/api/rodadas");
   $("rodadas").innerHTML = rodadasCache.length ? rodadasCache.map(r => {
     const cols = [...new Set(r.totais.map(t => t.coluna))];
-    const resumo = r.totais.filter(t => t.coluna === cols[0])
-      .map(t => `${t.turno}º turno: ${fmt(t.valor)} (${pct(t.valor, t.comparecimento)}, ${t.ufs} UFs)`).join(" · ");
+    const resumo = [
+      ...r.totais.filter(t => t.coluna === cols[0])
+        .map(t => `BU ${t.turno}º turno: ${fmt(t.valor)} sem biometria (${pct(t.valor, t.comparecimento)}, ${t.ufs} UFs)`),
+      ...(r.logs || []).map(t => `Logs ${t.turno}º turno: ${fmt(t.sem_apos)} sem digital após 17h, ${fmt(t.votos_apos)} votos após 17h (${fmt(t.secoes)} seções)`),
+    ].join(" · ");
     return `<li class="rodada${rodadaAtual?.id === r.id ? " ativa" : ""}" data-id="${r.id}">
       <span class="desc">#${r.id} · ${dataBR(r.criado)} · ${esc(r.descricao)}</span>
       <span class="info">${resumo || "sem dados"}</span>
@@ -138,7 +144,7 @@ async function carregarTarefas() {
       ${t.status === "executando" ? `<div class="bar"><i style="width:${(t.progresso * 100).toFixed(1)}%"></i></div>` : ""}
       <span class="info">${esc(t.mensagem)}</span></li>`).join("") : `<li class="empty">Nenhuma tarefa ainda.</li>`;
   const estado = ts.map(t => t.id + t.status).join();
-  if (estado !== ultimoEstado) { ultimoEstado = estado; carregarResumo(); carregarRodadas(); }
+  if (estado !== ultimoEstado) { ultimoEstado = estado; carregarResumo(); carregarRodadas(); carregarLogs(); carregarDiag(); }
 }
 async function ciclo() {
   try { await carregarTarefas(); } catch (e) { console.error(e); }
@@ -169,7 +175,7 @@ drop.addEventListener("drop", e => escolher(e.dataTransfer.files[0]));
 let arquivo = null;
 function escolher(f) {
   if (!f) return;
-  if (!/\.(zip|csv)$/i.test(f.name)) { msg($("msgUp"), "Escolha um arquivo .zip ou .csv.", true); return; }
+  if (!/\.(zip|csv|logjez)$/i.test(f.name)) { msg($("msgUp"), "Escolha um arquivo .zip, .csv ou .logjez.", true); return; }
   arquivo = f;
   $("dropTxt").textContent = `${f.name} (${(f.size / 1e6).toLocaleString("pt-BR", {maximumFractionDigits: 0})} MB)`;
   $("btnUp").disabled = false; msg($("msgUp"), "");
@@ -181,7 +187,7 @@ $("formUp").addEventListener("submit", async e => {
   $("btnUp").disabled = true; $("upBarBox").hidden = false;
   try {
     const {id} = await api("/api/upload/init", {method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({nome: arquivo.name, tamanho: arquivo.size})});
+      body: JSON.stringify({nome: arquivo.name, tamanho: arquivo.size, turno: $("upTurno").value, uf: $("upUf").value})});
     const partes = Math.ceil(arquivo.size / CHUNK);
     const t0 = performance.now();
     for (let i = 0; i < partes; i++) {
@@ -213,12 +219,128 @@ $("simLimpar").onclick = async () => { await api("/api/limpar", {method: "POST"}
 
 // ------------------------------------------------ impressão / PDF
 function carimbarData() {
+  $("modoPrint").textContent = "Horário de corte: " + (modoHora() === "aj" ? "17h de Brasília, com ajuste do fuso de cada UF." : "17h no relógio da urna, sem ajuste de fuso.");
   $("geradoEm").textContent = "Relatório gerado em " + new Date().toLocaleString("pt-BR") +
     (rodadaAtual ? ` · Rodada #${rodadaAtual.id} de ${dataBR(rodadaAtual.criado)} (${rodadaAtual.descricao})` : " · Resultados atuais");
 }
 window.addEventListener("beforeprint", carimbarData);
 $("btnImprimir").onclick = () => { carimbarData(); window.print(); };
 
+// ------------------------------------------------ logs de urna: votos após as 17h
+const hm = v => v || "–";
+const modoHora = () => document.querySelector("[name=modo]:checked")?.value || "aj";
+document.querySelectorAll(".sel-uf").forEach(sel => sel.insertAdjacentHTML("beforeend", UFS.map(u => `<option value="${u}">${u}</option>`).join("")));
+document.querySelectorAll("[name=modo]").forEach(r => r.addEventListener("change", () => { $("secLogSec").hidden = true; renderLogs(); }));
+
+let logsCache = [];
+async function carregarLogs() {
+  const {por_uf} = await api("/api/logs/resumo" + qs());
+  logsCache = por_uf;
+  renderLogs();
+}
+function renderLogs() {
+  const m = modoHora(), rows = logsCache;
+  const turnos = [...new Set(rows.map(r => r.turno))].sort();
+  if (!turnos.length) {
+    $("logTotals").innerHTML = `<p class="empty">${rodadaAtual ? "Esta rodada não tem logs." : "Nenhum log processado ainda. Envie um ZIP de logs em \"Enviar arquivo\" ou informe o endereço do arquivo no TSE abaixo."}</p>`;
+    $("logPorUf").innerHTML = ""; return;
+  }
+  const soma = (lst, k) => lst.reduce((a, r) => a + (r[k] || 0), 0);
+  $("logTotals").innerHTML = turnos.map(t => {
+    const l = rows.filter(r => r.turno === t);
+    const va = soma(l, "votos_apos_" + m), sa = soma(l, "sem_apos_" + m), v = soma(l, "votos"), sem = soma(l, "sem");
+    const zeroSem = v > 0 && sem === 0, zeroVoto = v === 0;
+    return `<div class="turno">
+      <span class="eyebrow">${t}º turno · logs de ${fmt(soma(l, "secoes"))} seções em ${l.length} UF(s)</span>
+      <span class="small">Liberados sem digital com voto após as 17h</span>
+      <span class="big">${fmt(sa)}</span>
+      <div class="linha"><span>Votos computados após as 17h</span><span>${fmt(va)}</span></div>
+      <div class="linha"><span>Sem digital entre os votos após 17h</span><span>${pct(sa, va)}</span></div>
+      <div class="linha"><span>Votos computados no dia (logs)</span><span>${fmt(v)}</span></div>
+      <div class="linha"><span>Liberados sem digital no dia (logs)</span><span>${fmt(sem)}</span></div>
+      ${zeroVoto ? `<span class="alerta">Nenhum voto computado foi reconhecido nos logs. Confira os padrões de mensagem.</span>` : ""}
+      ${zeroSem ? `<span class="alerta">Nenhuma liberação sem digital foi reconhecida. Confira os padrões de mensagem.</span>` : ""}
+    </div>`;
+  }).join("");
+
+  $("logPorUf").innerHTML = turnos.map(t => {
+    const l = rows.filter(r => r.turno === t);
+    return `<div class="bloco-turno">
+      <h3>${t}º turno</h3>
+      <div class="tablebox"><table>
+        <thead><tr><th class="l">UF</th><th>Seções (logs)</th><th>Votos</th><th>Votos após 17h</th><th>Sem digital</th><th>Sem digital após 17h</th>
+          <th>1º voto*</th><th>Último voto*</th><th>BU sem biometria</th><th>Seções no BU</th></tr></thead>
+        <tbody>${l.map(r => `<tr class="click" data-t="${r.turno}" data-uf="${r.uf}" tabindex="0">
+          <td class="l">${r.uf}${r.fuso ? ` <span class="small">(${r.fuso > 0 ? "+" : ""}${r.fuso}h)</span>` : ""}</td>
+          <td>${fmt(r.secoes)}</td><td>${fmt(r.votos)}</td><td>${fmt(r["votos_apos_" + m])}</td><td>${fmt(r.sem)}</td>
+          <td><strong>${fmt(r["sem_apos_" + m])}</strong></td><td>${hm(r.primeiro_mediana)}</td><td>${hm(r.ultimo_mediana)}</td>
+          <td>${r.bu_sem == null ? "–" : fmt(r.bu_sem)}</td><td>${r.bu_secoes == null ? "–" : fmt(r.bu_secoes)}</td></tr>`).join("")}</tbody>
+        <tfoot><tr><td class="l">Total</td><td>${fmt(soma(l, "secoes"))}</td><td>${fmt(soma(l, "votos"))}</td><td>${fmt(soma(l, "votos_apos_" + m))}</td>
+          <td>${fmt(soma(l, "sem"))}</td><td>${fmt(soma(l, "sem_apos_" + m))}</td><td></td><td></td><td></td><td></td></tr></tfoot>
+      </table></div>
+    </div>`;
+  }).join("") + `<p class="small">* Mediana entre as seções, pela hora gravada na urna. Se o 1º voto do Acre aparece por volta das 06:00, o relógio da urna está na hora local e o corte "17h de Brasília" é o correto. "Sem digital" nos logs deve ficar próximo de "BU sem biometria" quando todas as seções da UF foram processadas; uma diferença grande indica que os padrões de mensagem precisam de ajuste.</p>`;
+}
+
+$("logPorUf").addEventListener("click", e => abrirLogSec(e.target.closest("tr.click")));
+$("logPorUf").addEventListener("keydown", e => { if (e.key === "Enter") abrirLogSec(e.target.closest("tr.click")); });
+async function abrirLogSec(tr) {
+  if (!tr) return;
+  const {t, uf} = tr.dataset;
+  const linhas = await api("/api/logs/secoes" + qs(`turno=${t}&uf=${uf}&modo=${modoHora()}`));
+  $("titLogSec").textContent = `Seções · ${uf} · ${t}º turno` + (rodadaAtual ? ` · rodada #${rodadaAtual.id}` : "") + " · até 300, ordenadas por sem digital após 17h";
+  $("tabLogSec").innerHTML = `<thead><tr><th class="l">Município</th><th>Zona</th><th>Seção</th><th>Votos</th><th>Votos após 17h</th><th>Sem digital</th><th>Sem digital após 17h</th><th>1º voto</th><th>Último voto</th></tr></thead>
+    <tbody>${linhas.map(r => `<tr><td class="l">${esc(r.nm_municipio || r.cd_municipio || "–")}</td><td>${esc(r.zona)}</td><td>${esc(r.secao)}</td>
+      <td>${fmt(r.votos)}</td><td>${fmt(r.votos_apos)}</td><td>${fmt(r.sem)}</td><td><strong>${fmt(r.sem_apos)}</strong></td><td>${hm(r.primeiro)}</td><td>${hm(r.ultimo)}</td></tr>`).join("")}</tbody>`;
+  $("secLogSec").hidden = false;
+  $("secLogSec").scrollIntoView({behavior: "smooth"});
+}
+$("fecharLogSec").onclick = () => $("secLogSec").hidden = true;
+
+$("formLogUrl").addEventListener("submit", async e => {
+  e.preventDefault();
+  $("btnLogUrl").disabled = true;
+  try {
+    await api("/api/logs/url", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({url: $("logUrl").value, turno: $("logTurno").value, uf: $("logUf").value})});
+    msg($("msgLogUrl"), "Tarefa criada. Acompanhe em Tarefas.");
+    ativo = true; carregarTarefas();
+  } catch (err) { msg($("msgLogUrl"), err.message, true); }
+  finally { $("btnLogUrl").disabled = false; }
+});
+
+async function carregarPadroes() {
+  const {padroes} = await api("/api/logs/config");
+  $("padIni").value = padroes.inicio; $("padSem").value = padroes.sem_digital; $("padComp").value = padroes.computado;
+}
+$("formPadroes").addEventListener("submit", async e => {
+  e.preventDefault();
+  try {
+    await api("/api/logs/config", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({padroes: {inicio: $("padIni").value, sem_digital: $("padSem").value, computado: $("padComp").value}})});
+    msg($("msgPad"), "Padrões salvos. Processe os logs de novo para aplicar."); carregarDiag();
+  } catch (err) { msg($("msgPad"), err.message, true); }
+});
+$("restaurarPad").onclick = async () => {
+  await api("/api/logs/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({restaurar: true})});
+  await carregarPadroes(); msg($("msgPad"), "Padrões originais restaurados."); carregarDiag();
+};
+
+const ROTULO_PAD = {inicio: "início", sem_digital: "sem digital", computado: "voto computado"};
+async function carregarDiag() {
+  const d = await api("/api/logs/diagnostico");
+  if (!d) { $("diagInfo").textContent = "(nenhum log processado)"; $("tabDiag").innerHTML = ""; return; }
+  const {mensagens, logs: n, erros} = d.diagnostico;
+  const pad = {inicio: $("padIni").value, sem_digital: $("padSem").value, computado: $("padComp").value};
+  const marca = txt => Object.entries(pad).filter(([, rx]) => { try { return new RegExp(rx).test(txt); } catch { return false; } }).map(([k]) => k);
+  $("diagInfo").textContent = `· ${d.descricao} · ${n} logs · amostra dos primeiros 30` + (erros?.length ? ` · ${erros.length} erro(s) de leitura` : "");
+  $("tabDiag").innerHTML = `<thead><tr><th class="l">Marcação (padrões atuais)</th><th class="l">Mensagem (números trocados por #)</th><th>Ocorrências</th></tr></thead>
+    <tbody>${mensagens.map(([txt, c]) => `<tr><td class="l">${marca(txt).map(k => `<span class="tag">${ROTULO_PAD[k]}</span>`).join("") || "–"}</td>
+      <td class="msgcol mono">${esc(txt)}</td><td>${fmt(c)}</td></tr>`).join("")}</tbody>`;
+}
+
 carregarResumo().catch(console.error);
 carregarRodadas().catch(console.error);
+carregarLogs().catch(console.error);
+carregarPadroes().then(carregarDiag).catch(console.error);
 ciclo();

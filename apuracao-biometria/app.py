@@ -1,18 +1,26 @@
 """Apuração Sem Biometria — soma de eleitores liberados sem biometria nos Boletins de Urna (TSE)."""
 import csv
 import io
+import json
+import multiprocessing as mp
 import os
 import queue
+import re
 import secrets
 import shutil
 import tempfile
 import threading
 import traceback
 import uuid
+import zipfile
+from collections import Counter, deque
+from concurrent.futures import ProcessPoolExecutor
+from urllib.parse import urlparse
 
 from flask import Flask, Response, abort, jsonify, render_template, request
 
 import db
+import logs
 import processor
 import tse
 
@@ -23,6 +31,8 @@ SENHA = os.environ.get("APP_PASSWORD", "")
 MAX_UPLOAD = float(os.environ.get("MAX_UPLOAD_GB", "6")) * 1e9
 TMP_DIR = os.environ.get("TMP_DIR", os.path.join(tempfile.gettempdir(), "apuracao"))
 os.makedirs(TMP_DIR, exist_ok=True)
+LOG_WORKERS = int(os.environ.get("LOG_WORKERS", str(min(4, os.cpu_count() or 1))))
+HOSTS_LOG = tuple(h.strip().lower() for h in os.environ.get("LOG_URL_HOSTS", "tse.jus.br").split(",") if h.strip())
 
 # ---------------------------------------------------------------- autenticação opcional
 @app.before_request
@@ -46,20 +56,29 @@ def _executar(tid, job):
     resumo = []
     rodada = {"id": None}
 
-    def salvar(linhas, origem):
+    def obter_rodada():
         # a rodada só é criada quando há o primeiro resultado (tarefa com erro não gera rodada vazia)
         if rodada["id"] is None:
             rodada["id"] = db.nova_rodada(tid, job.get("descricao", ""))
-        return db.salvar_resultados(linhas, origem, rodada["id"])
+        return rodada["id"]
 
-    if job["tipo"] == "arquivo":
-        caminho = job["caminho"]
+    def salvar(linhas, origem):
+        return db.salvar_resultados(linhas, origem, obter_rodada())
+
+    if job["tipo"] in ("arquivo", "logs_url"):
+        caminho = job.get("caminho")
         try:
-            cols, secoes = processor.ler_secoes(caminho, prog)
-            pares = salvar(processor.agregar_por_municipio(cols, secoes), job["nome"])
-            resumo.append(", ".join(f"{t}ºT {u}" for t, u in pares))
+            if job["tipo"] == "logs_url":
+                caminho = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_{job['nome']}")
+                tse.baixar(job["url"], caminho, lambda f, t: prog(0.3 * f, t))
+            if logs.eh_arquivo_de_logs(caminho):
+                resumo.append(_processar_logs(tid, caminho, job, prog, obter_rodada))
+            else:
+                cols, secoes = processor.ler_secoes(caminho, prog)
+                pares = salvar(processor.agregar_por_municipio(cols, secoes), job["nome"])
+                resumo.append(", ".join(f"{t}ºT {u}" for t, u in pares))
         finally:
-            if os.path.exists(caminho):
+            if caminho and os.path.exists(caminho):
                 os.remove(caminho)
     else:  # tse
         arquivos = [a for a in tse.listar_arquivos()
@@ -81,6 +100,103 @@ def _executar(tid, job):
                     os.remove(destino)
     db.atualizar_tarefa(tid, status="concluída", progresso=1,
                         mensagem=f"Rodada #{rodada['id']} arquivada · " + ", ".join(resumo))
+
+
+def padroes_log():
+    salvo = db.ler_config("padroes_log")
+    return logs.validar_padroes(json.loads(salvo) if salvo else {})
+
+
+def _mapear(gerador):
+    """Processa os logs em paralelo (processos auxiliares) mantendo poucos itens em memória."""
+    if LOG_WORKERS <= 1:
+        for args, meta in gerador:
+            yield meta, logs._trabalho(args)
+        return
+    with ProcessPoolExecutor(LOG_WORKERS, mp_context=mp.get_context("spawn")) as ex:
+        pendentes = deque()
+        for args, meta in gerador:
+            pendentes.append((meta, ex.submit(logs._trabalho, args)))
+            if len(pendentes) >= LOG_WORKERS * 4:
+                m, f = pendentes.popleft()
+                yield m, f.result()
+        while pendentes:
+            m, f = pendentes.popleft()
+            yield m, f.result()
+
+
+def _processar_logs(tid, caminho, job, prog, obter_rodada):
+    padroes = padroes_log()
+    mapa_uf = {r["cd_municipio"]: r["uf"] for r in db.consultar(
+        "SELECT DISTINCT cd_municipio, uf FROM resultados UNION SELECT DISTINCT cd_municipio, uf FROM rodada_resultados")}
+    nome = job["nome"]
+    total = None
+    if caminho.lower().endswith(".zip") or not nome.lower().endswith(".logjez"):
+
+        if zipfile.is_zipfile(caminho):
+            with zipfile.ZipFile(caminho) as z:
+                total = sum(1 for n in z.namelist() if n.lower().endswith(".logjez")) or None
+    base_prog = 0.3 if job["tipo"] == "logs_url" else 0.0
+    estado = {"coletados": 0}
+
+    def gerador():
+        for rotulo, dados in logs.iterar_logs(caminho, TMP_DIR, nome):
+            cd, zona, sec = logs.identificar_secao(rotulo)
+            uf = logs.detectar_uf(rotulo) or mapa_uf.get(cd) or job.get("uf")
+            if not uf:
+                raise RuntimeError(f"Não foi possível identificar a UF de '{rotulo}'. "
+                                   "Escolha a UF no formulário e envie de novo.")
+            turno = logs.detectar_turno(rotulo) or job.get("turno") or "2"
+            coletar = estado["coletados"] < 30
+            estado["coletados"] += coletar
+            yield (rotulo, dados, padroes, uf, coletar), (turno, uf, cd, zona, sec)
+
+    secoes, mensagens, erros = {}, Counter(), []
+    feitos = 0
+    for (turno, uf, cd, zona, sec), (rotulo, r, erro) in _mapear(gerador()):
+        feitos += 1
+        if erro:
+            erros.append(f"{rotulo}: {erro}")
+            continue
+        mensagens.update(r.pop("mensagens", {}))
+        chave = (turno, uf, cd, zona, sec)
+        s = secoes.get(chave)
+        if s is None:
+            secoes[chave] = s = {"turno": turno, "uf": uf, "cd_municipio": cd, "zona": zona, "secao": sec,
+                                 "arquivos": 0, "primeiro": None, "ultimo": None, "origem": nome,
+                                 **{k: 0 for k in ("votos", "votos_apos_aj", "votos_apos_br", "sem", "sem_apos_aj", "sem_apos_br")}}
+        s["arquivos"] += 1
+        for k in ("votos", "votos_apos_aj", "votos_apos_br", "sem", "sem_apos_aj", "sem_apos_br"):
+            s[k] += r[k]
+        for k, f in (("primeiro", min), ("ultimo", max)):
+            if r[k] is not None:
+                s[k] = r[k] if s[k] is None else f(s[k], r[k])
+        if feitos % 200 == 0:
+            frac = base_prog + (1 - base_prog) * (feitos / total if total else 0)
+            prog(min(frac, 0.99), f"{feitos:,} logs lidos".replace(",", ".") + (f" de {total:,}".replace(",", ".") if total else ""))
+
+    if not secoes:
+        detalhe = f" Erros: {'; '.join(erros[:3])}" if erros else ""
+        raise RuntimeError("Nenhum log de urna (.logjez) foi lido." + detalhe)
+    db.salvar_logs(obter_rodada(), list(secoes.values()))
+
+    re_p = {k: re.compile(v) for k, v in padroes.items()}
+    diag = {"logs": feitos, "erros": erros[:10],
+            "mensagens": [[m, c, [k for k, rx in re_p.items() if rx.search(m)]] for m, c in mensagens.most_common(60)]}
+    db.atualizar_tarefa(tid, diagnostico=json.dumps(diag, ensure_ascii=False))
+
+    votos = sum(s["votos"] for s in secoes.values())
+    sem = sum(s["sem"] for s in secoes.values())
+    ufs = sorted({(s["turno"], s["uf"]) for s in secoes.values()})
+    texto = f"Logs: {feitos:,} arquivos, {len(secoes):,} seções ({', '.join(f'{t}ºT {u}' for t, u in ufs)}), ".replace(",", ".")
+    texto += f"{votos:,} votos, {sem:,} sem digital".replace(",", ".")
+    if votos == 0:
+        texto += " · ATENÇÃO: nenhum 'voto computado' reconhecido; confira os padrões de mensagem"
+    elif sem == 0:
+        texto += " · ATENÇÃO: nenhuma liberação sem digital reconhecida; confira os padrões de mensagem"
+    if erros:
+        texto += f" · {len(erros)} arquivo(s) com erro de leitura"
+    return texto
 
 
 def _trabalhador():
@@ -157,11 +273,18 @@ def rodadas():
         SELECT rodada_id, turno, coluna, SUM(valor) valor, SUM(comparecimento) comparecimento,
                SUM(secoes) secoes, COUNT(DISTINCT uf) ufs
         FROM rodada_resultados GROUP BY rodada_id, turno, coluna ORDER BY turno, coluna""")
-    por_id = {}
+    tot_logs = db.consultar("""
+        SELECT rodada_id, turno, COUNT(*) secoes, COUNT(DISTINCT uf) ufs, SUM(votos) votos,
+               SUM(votos_apos_aj) votos_apos, SUM(sem) sem, SUM(sem_apos_aj) sem_apos
+        FROM log_secoes GROUP BY rodada_id, turno ORDER BY turno""")
+    por_id, por_id_log = {}, {}
     for t in totais:
         por_id.setdefault(t.pop("rodada_id"), []).append(t)
+    for t in tot_logs:
+        por_id_log.setdefault(t.pop("rodada_id"), []).append(t)
     for r in lista:
         r["totais"] = por_id.get(r["id"], [])
+        r["logs"] = por_id_log.get(r["id"], [])
     return jsonify(lista)
 
 
@@ -232,8 +355,8 @@ def upload_init():
     dados = request.get_json(force=True) or {}
     nome = os.path.basename(str(dados.get("nome", "")))
     tamanho = int(dados.get("tamanho", 0))
-    if not nome.lower().endswith((".zip", ".csv")):
-        abort(400, "Envie um arquivo .zip ou .csv.")
+    if not nome.lower().endswith((".zip", ".csv", ".logjez")):
+        abort(400, "Envie um arquivo .zip, .csv ou .logjez.")
     if tamanho <= 0 or tamanho > MAX_UPLOAD:
         abort(400, f"Tamanho inválido (limite {MAX_UPLOAD/1e9:.0f} GB).")
     if shutil.disk_usage(TMP_DIR).free < tamanho * 1.1:
@@ -241,8 +364,11 @@ def upload_init():
     uid = uuid.uuid4().hex
     caminho = os.path.join(TMP_DIR, f"{uid}_{nome}")
     open(caminho, "wb").close()
+    turno = str(dados.get("turno", "")) if str(dados.get("turno", "")) in ("1", "2") else ""
+    uf = str(dados.get("uf", "")).upper() if str(dados.get("uf", "")).upper() in logs.UFS else ""
     with _up_lock:
-        uploads[uid] = {"nome": nome, "caminho": caminho, "tamanho": tamanho, "proximo": 0, "recebido": 0}
+        uploads[uid] = {"nome": nome, "caminho": caminho, "tamanho": tamanho, "proximo": 0, "recebido": 0,
+                        "turno": turno, "uf": uf}
     return {"id": uid}
 
 
@@ -275,7 +401,133 @@ def upload_fim(uid):
     if up["recebido"] != up["tamanho"]:
         os.remove(up["caminho"])
         abort(400, "Arquivo incompleto. Envie novamente.")
-    return {"id": enfileirar(f"Arquivo · {up['nome']}", {"tipo": "arquivo", "caminho": up["caminho"], "nome": up["nome"]})}
+    return {"id": enfileirar(f"Arquivo · {up['nome']}", {"tipo": "arquivo", "caminho": up["caminho"], "nome": up["nome"],
+                                                        "turno": up["turno"], "uf": up["uf"]})}
+
+
+# ---------------------------------------------------------------- logs de urna: votos após as 17h
+def base_logs():
+    """Subconsulta das seções de log: de uma rodada (?rodada=N) ou a versão mais recente de cada seção."""
+    rid = request.args.get("rodada", "").strip()
+    if rid:
+        if not rid.isdigit():
+            abort(400, "Rodada inválida.")
+        return "SELECT * FROM log_secoes WHERE rodada_id=?", (int(rid),)
+    return ("""SELECT l.* FROM log_secoes l JOIN (
+                 SELECT turno, uf, cd_municipio, zona, secao, MAX(rodada_id) r FROM log_secoes
+                 GROUP BY turno, uf, cd_municipio, zona, secao) u
+               ON l.turno=u.turno AND l.uf=u.uf AND l.cd_municipio=u.cd_municipio
+              AND l.zona=u.zona AND l.secao=u.secao AND l.rodada_id=u.r""", ())
+
+
+@app.get("/api/logs/resumo")
+def logs_resumo():
+    base, p = base_logs()
+    por_uf = db.consultar(f"""
+        SELECT turno, uf, COUNT(*) secoes, SUM(arquivos) arquivos, SUM(votos) votos,
+               SUM(votos_apos_aj) votos_apos_aj, SUM(votos_apos_br) votos_apos_br,
+               SUM(sem) sem, SUM(sem_apos_aj) sem_apos_aj, SUM(sem_apos_br) sem_apos_br
+        FROM ({base}) b GROUP BY turno, uf ORDER BY turno, uf""", p)
+    horas = {}
+    for r in db.consultar(f"SELECT turno, uf, primeiro, ultimo FROM ({base}) b", p):
+        h = horas.setdefault((r["turno"], r["uf"]), ([], []))
+        h[0].append(r["primeiro"])
+        h[1].append(r["ultimo"])
+    bu = {(r["turno"], r["uf"]): r for r in db.consultar("""
+        SELECT turno, uf, SUM(valor) valor, SUM(secoes) secoes FROM resultados
+        WHERE coluna = (SELECT MIN(coluna) FROM resultados) GROUP BY turno, uf""")}
+    for r in por_uf:
+        prim, ult = horas.get((r["turno"], r["uf"]), ([], []))
+        r["primeiro_mediana"] = logs.hhmm(logs.mediana_hora(prim))
+        r["ultimo_mediana"] = logs.hhmm(logs.mediana_hora(ult))
+        r["fuso"] = logs.FUSO_UF.get(r["uf"], 0)
+        b = bu.get((r["turno"], r["uf"]))
+        r["bu_sem"] = b["valor"] if b else None
+        r["bu_secoes"] = b["secoes"] if b else None
+    return jsonify(por_uf=por_uf)
+
+
+@app.get("/api/logs/secoes")
+def logs_secoes():
+    base, p = base_logs()
+    modo = "br" if request.args.get("modo") == "br" else "aj"
+    linhas = db.consultar(f"""
+        SELECT cd_municipio, zona, secao, arquivos, votos, votos_apos_{modo} votos_apos, sem, sem_apos_{modo} sem_apos,
+               primeiro, ultimo FROM ({base}) b WHERE turno=? AND uf=?
+        ORDER BY sem_apos_{modo} DESC, votos_apos_{modo} DESC LIMIT 300""",
+                          (*p, request.args.get("turno", ""), request.args.get("uf", "")))
+    nomes = {r["cd_municipio"]: r["nm_municipio"] for r in db.consultar(
+        "SELECT DISTINCT cd_municipio, nm_municipio FROM resultados UNION SELECT DISTINCT cd_municipio, nm_municipio FROM rodada_resultados")}
+    for r in linhas:
+        r["nm_municipio"] = nomes.get(r["cd_municipio"], "")
+        r["primeiro"], r["ultimo"] = logs.hhmm(r["primeiro"]), logs.hhmm(r["ultimo"])
+    return jsonify(linhas)
+
+
+@app.get("/api/logs/export.csv")
+def logs_exportar():
+    base, p = base_logs()
+    linhas = db.consultar(f"""
+        SELECT turno, uf, cd_municipio, zona, secao, arquivos, votos,
+               votos_apos_aj votos_apos_17h_brasilia, sem sem_digital, sem_apos_aj sem_digital_apos_17h_brasilia,
+               votos_apos_br votos_apos_17h_relogio_urna, sem_apos_br sem_digital_apos_17h_relogio_urna,
+               primeiro, ultimo FROM ({base}) b ORDER BY turno, uf, cd_municipio, zona, secao""", p)
+    for r in linhas:
+        r["primeiro"], r["ultimo"] = logs.hhmm(r["primeiro"]), logs.hhmm(r["ultimo"])
+    buf = io.StringIO()
+    if linhas:
+        w = csv.DictWriter(buf, fieldnames=list(linhas[0].keys()), delimiter=";")
+        w.writeheader()
+        w.writerows(linhas)
+    sufixo = f"_rodada{request.args['rodada']}" if request.args.get("rodada") else ""
+    return Response("\ufeff" + buf.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": f"attachment; filename=logs_apos_17h_secoes{sufixo}.csv"})
+
+
+@app.get("/api/logs/config")
+def logs_config():
+    return jsonify(padroes=padroes_log(), padrao=logs.PADROES_PADRAO, fuso=logs.FUSO_UF)
+
+
+@app.post("/api/logs/config")
+def logs_config_salvar():
+    dados = request.get_json(force=True) or {}
+    if dados.get("restaurar"):
+        db.gravar_config("padroes_log", None)
+    else:
+        try:
+            padroes = logs.validar_padroes(dados.get("padroes") or {})
+        except logs.LogError as e:
+            abort(400, str(e))
+        db.gravar_config("padroes_log", json.dumps(padroes, ensure_ascii=False))
+    return jsonify(padroes=padroes_log())
+
+
+@app.get("/api/logs/diagnostico")
+def logs_diagnostico():
+    linhas = db.consultar("SELECT id, descricao, criado, diagnostico FROM tarefas "
+                          "WHERE diagnostico IS NOT NULL ORDER BY id DESC LIMIT 1")
+    if not linhas:
+        return jsonify(None)
+    r = linhas[0]
+    r["diagnostico"] = json.loads(r["diagnostico"])
+    return jsonify(r)
+
+
+@app.post("/api/logs/url")
+def logs_url():
+    dados = request.get_json(force=True) or {}
+    url = str(dados.get("url", "")).strip()
+    u = urlparse(url)
+    host = (u.hostname or "").lower()
+    if u.scheme not in ("http", "https") or not any(host == h or host.endswith("." + h) for h in HOSTS_LOG):
+        abort(400, "Informe um endereço do TSE (domínio tse.jus.br).")
+    nome = os.path.basename(u.path) or "logs.zip"
+    if not nome.lower().endswith((".zip", ".logjez")):
+        abort(400, "O endereço deve apontar para um arquivo .zip ou .logjez.")
+    turno = str(dados.get("turno", "")) if str(dados.get("turno", "")) in ("1", "2") else ""
+    uf = str(dados.get("uf", "")).upper() if str(dados.get("uf", "")).upper() in logs.UFS else ""
+    return {"id": enfileirar(f"Logs · {nome}", {"tipo": "logs_url", "url": url, "nome": nome, "turno": turno, "uf": uf})}
 
 
 @app.errorhandler(400)

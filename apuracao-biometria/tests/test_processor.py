@@ -75,7 +75,7 @@ class TesteProcessador(unittest.TestCase):
         self.assertEqual(c.get("/").status_code, 200)
 
         # cada processamento vira uma rodada arquivada
-        rodadas = c.get("/api/rodadas").get_json()
+        rodadas = [r for r in c.get("/api/rodadas").get_json() if r["tarefa_id"] == tarefa["id"]]
         self.assertEqual(len(rodadas), 1)
         rid = rodadas[0]["id"]
         self.assertEqual(rodadas[0]["totais"][0]["valor"], 20)
@@ -91,7 +91,7 @@ class TesteProcessador(unittest.TestCase):
         self.assertIn(f"rodada{rid}", c.get(f"/api/export.csv?rodada={rid}").headers["Content-Disposition"])
 
         c.delete(f"/api/rodadas/{rid}")
-        self.assertEqual(c.get("/api/rodadas").get_json(), [])
+        self.assertNotIn(rid, [r["id"] for r in c.get("/api/rodadas").get_json()])
 
 
 if __name__ == "__main__":

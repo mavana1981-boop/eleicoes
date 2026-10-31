@@ -10,6 +10,7 @@
   --bg:#0f1613; --surface:#17211c; --ink:#e4ece8; --muted:#93a59c; --line:#2a3832;
   --accent:#3fbf86; --accent-ink:#06130d; --accent-soft:#183a2a; --warn:#e39a55; --danger:#f2867d; color-scheme:dark}}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.5}
 .wrap{max-width:1000px;margin:0 auto;padding:28px max(16px,env(safe-area-inset-right,0px)) 56px max(16px,env(safe-area-inset-left,0px));display:flex;flex-direction:column;gap:28px}
 h1{font-size:1.8rem;margin:0;letter-spacing:-.01em;text-wrap:balance}
@@ -83,6 +84,19 @@ tfoot td{font-weight:600}
 .rodada .acoes{grid-row:1/3;grid-column:2;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:flex-end}
 .rodada .btn{padding:6px 12px;font-size:.85rem}
 
+.campos{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.campo{display:flex;flex-direction:column;gap:4px;min-width:0}
+.campo input,.campo select{font:inherit;font-size:.9rem;padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);min-width:0;width:100%}
+.campo input:focus-visible,.campo select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+h3{font-size:.95rem;margin:0}
+details.panel summary{cursor:pointer;display:flex;flex-wrap:wrap;gap:8px;align-items:baseline}
+details.panel[open] summary{margin-bottom:12px}
+.tag{font-family:var(--mono);font-size:.68rem;padding:1px 7px;border-radius:999px;border:1px solid var(--accent);color:var(--accent);margin-right:4px;white-space:nowrap}
+.alerta{color:var(--warn);font-weight:500}
+td.msgcol{text-align:left;white-space:normal;min-width:260px;font-size:.82rem}
+.turno .linha{display:flex;justify-content:space-between;gap:10px;font-size:.88rem}
+.turno .linha span:last-child{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
 /* ---------- impressão / PDF ---------- */
 .print-only{display:none}
 @media print{
@@ -107,6 +121,8 @@ tfoot td{font-weight:600}
   section{break-inside:auto}
   #secMun{break-before:page}
   .bloco-turno + .bloco-turno{break-before:page}
+  #secLogs{break-before:page}
+  #secLogSec[hidden]{display:none!important}
   .bloco-turno h3{font-size:12pt}
   a{color:inherit;text-decoration:none}
 }

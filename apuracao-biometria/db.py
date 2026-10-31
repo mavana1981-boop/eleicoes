@@ -34,6 +34,15 @@ def init():
             secoes INTEGER, comparecimento INTEGER, valor INTEGER, origem TEXT, atualizado TEXT
         );
         CREATE INDEX IF NOT EXISTS ix_rod ON rodada_resultados (rodada_id, turno, uf);
+        CREATE TABLE IF NOT EXISTS log_secoes (
+            rodada_id INTEGER, turno TEXT, uf TEXT, cd_municipio TEXT, zona TEXT, secao TEXT,
+            arquivos INTEGER, votos INTEGER, votos_apos_aj INTEGER, votos_apos_br INTEGER,
+            sem INTEGER, sem_apos_aj INTEGER, sem_apos_br INTEGER,
+            primeiro INTEGER, ultimo INTEGER, origem TEXT, atualizado TEXT
+        );
+        CREATE INDEX IF NOT EXISTS ix_log ON log_secoes (turno, uf, cd_municipio, zona, secao, rodada_id);
+        CREATE INDEX IF NOT EXISTS ix_log_rod ON log_secoes (rodada_id);
+        CREATE TABLE IF NOT EXISTS config (chave TEXT PRIMARY KEY, valor TEXT);
         CREATE TABLE IF NOT EXISTS tarefas (
             id INTEGER PRIMARY KEY AUTOINCREMENT, descricao TEXT, status TEXT,
             progresso REAL DEFAULT 0, mensagem TEXT DEFAULT '', criado TEXT, atualizado TEXT
@@ -42,6 +51,9 @@ def init():
         # tarefas interrompidas por reinício do servidor
         _conn.execute("UPDATE tarefas SET status='erro', mensagem='Interrompida pelo reinício do servidor' "
                       "WHERE status IN ('na fila','executando')")
+        colunas = [r[1] for r in _conn.execute("PRAGMA table_info(tarefas)")]
+        if "diagnostico" not in colunas:
+            _conn.execute("ALTER TABLE tarefas ADD COLUMN diagnostico TEXT")
         # resultados existentes antes do arquivamento viram a primeira rodada
         sem_rodadas = _conn.execute("SELECT COUNT(*) FROM rodadas").fetchone()[0] == 0
         tem_dados = _conn.execute("SELECT COUNT(*) FROM resultados").fetchone()[0] > 0
@@ -81,6 +93,7 @@ def nova_rodada(tarefa_id, descricao):
 def excluir_rodada(rid):
     with _lock, _conn:
         _conn.execute("DELETE FROM rodada_resultados WHERE rodada_id=?", (rid,))
+        _conn.execute("DELETE FROM log_secoes WHERE rodada_id=?", (rid,))
         _conn.execute("DELETE FROM rodadas WHERE id=?", (rid,))
 
 
@@ -105,3 +118,27 @@ def atualizar_tarefa(tid, **campos):
     campos["atualizado"] = agora()
     sets = ", ".join(f"{k}=?" for k in campos)
     executar(f"UPDATE tarefas SET {sets} WHERE id=?", (*campos.values(), tid))
+
+
+def salvar_logs(rodada_id, linhas):
+    ts = agora()
+    with _lock, _conn:
+        _conn.executemany(
+            "INSERT INTO log_secoes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(rodada_id, l["turno"], l["uf"], l["cd_municipio"], l["zona"], l["secao"], l["arquivos"],
+              l["votos"], l["votos_apos_aj"], l["votos_apos_br"], l["sem"], l["sem_apos_aj"], l["sem_apos_br"],
+              l["primeiro"], l["ultimo"], l["origem"], ts) for l in linhas],
+        )
+
+
+def ler_config(chave, padrao=None):
+    linhas = consultar("SELECT valor FROM config WHERE chave=?", (chave,))
+    return linhas[0]["valor"] if linhas else padrao
+
+
+def gravar_config(chave, valor):
+    if valor is None:
+        executar("DELETE FROM config WHERE chave=?", (chave,))
+    else:
+        executar("INSERT INTO config (chave, valor) VALUES (?, ?) "
+                 "ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor", (chave, valor))
