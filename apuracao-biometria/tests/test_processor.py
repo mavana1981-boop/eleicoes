@@ -54,6 +54,15 @@ class TesteProcessador(unittest.TestCase):
         with self.assertRaises(processor.ProcessingError):
             processor.ler_secoes(caminho)
 
+    def test_arquivo_detalhe_votacao(self):
+        caminho = os.path.join(TMP, "detalhe_votacao_secao_2026_AP.csv")
+        with open(caminho, "wb") as f:
+            f.write(b'"NR_TURNO";"SG_UF";"CD_MUNICIPIO";"NR_ZONA";"NR_SECAO";"QT_COMPARECIMENTO";"QT_VOTOS_NOMINAIS"\n'
+                    b'"2";"AP";"6050";"2";"10";"300";"280"\n')
+        with self.assertRaises(processor.ProcessingError) as ctx:
+            processor.ler_secoes(caminho)
+        self.assertIn("Boletim de Urna", str(ctx.exception))
+
     def test_fluxo_completo_upload(self):
         import app as appmod
         c = appmod.app.test_client()
