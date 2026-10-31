@@ -100,6 +100,11 @@ def ler_secoes(caminho, progresso=None):
             raise ProcessingError(f"{nome}: colunas ausentes {faltando}. Este não parece um arquivo de Boletim de Urna.")
         bio = [c for c in cab if eh_coluna_biometria(c)]
         if not bio:
+            if "QT_VOTOS_NOMINAIS" in idx or "DT_RECEBIMENTO_BU_HOR_TSE" in idx or nome.lower().startswith("detalhe_votacao"):
+                raise ProcessingError(
+                    f"{nome} é o arquivo 'Detalhe da votação por seção', que não informa a biometria. "
+                    "Use o Boletim de Urna: conjunto 'resultados-2026-boletim-de-urna' no Portal de Dados Abertos, "
+                    "arquivos bweb_1t_UF_….zip ou bweb_2t_UF_….zip (ou o botão 'Buscar no TSE').")
             raise ProcessingError(f"{nome}: nenhuma coluna de liberação sem biometria encontrada. Colunas: {', '.join(cab)}")
         if colunas_bio is None:
             colunas_bio = bio
