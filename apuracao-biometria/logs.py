@@ -38,7 +38,7 @@ PADROES_PADRAO = {
 HORA_LIMITE = 17 * 3600  # 17h00 em segundos
 
 RE_DATA_HORA = re.compile(r"(\d{2})/(\d{2})/(\d{4})[ \t]+(\d{2}):(\d{2}):(\d{2})")
-RE_SECAO = re.compile(r"(\d{5})(\d{4})(\d{4})\.logjez$", re.I)
+RE_SECAO = re.compile(r"(?<!\d)(\d{5})(\d{4})(\d{4})(?!\d)")
 RE_UF = re.compile(r"(?:^|[^A-Z])(" + "|".join(UFS) + r")(?:[^A-Z]|$)")
 RE_TURNO = re.compile(r"(?:^|[^0-9a-z])([12])\s*t(?:urno)?(?:[^a-z]|$)", re.I)
 _SEM_ACENTO = str.maketrans("áàâãäéèêëíìîïóòôõöúùûüçÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇ",
@@ -167,41 +167,76 @@ def detectar_turno(caminho: str):
 
 def eh_arquivo_de_logs(caminho: str) -> bool:
     """True se o arquivo é um .logjez ou um ZIP com logs (diretos ou em ZIPs internos)."""
-    if caminho.lower().endswith(".logjez"):
+    if eh_nome_de_log(caminho):
         return True
     if not zipfile.is_zipfile(caminho):
         return False
     with zipfile.ZipFile(caminho) as z:
         nomes = [n.lower() for n in z.namelist()]
-    if any(n.endswith(".logjez") for n in nomes):
+    if any(eh_nome_de_log(n) or n.endswith((".rdv", ".imgbu", ".vscmr")) for n in nomes):
         return True
     if any(n.endswith(".csv") for n in nomes):
         return False
     return any(n.endswith(".zip") for n in nomes)
 
 
-def iterar_logs(caminho: str, tmp_dir: str, rotulo: str = ""):
-    """Gera (caminho_logico, bytes) para cada .logjez, abrindo ZIPs internos se houver."""
+# Arquivos de urna que acompanham os logs no ZIP do TSE e não são logs
+EXT_NAO_LOG = (".bu", ".imgbu", ".rdv", ".vscmr", ".sha512", ".pdf", ".csv", ".json", ".sig", ".p7s")
+
+
+def eh_nome_de_log(nome: str) -> bool:
+    n = os.path.basename(nome).lower()
+    if n.endswith((".logjez", ".jez", ".log")):
+        return True
+    return "log" in n and not n.endswith(EXT_NAO_LOG + (".zip",))
+
+
+def _anotar(inventario, nome):
+    if inventario is None:
+        return
+    base = os.path.basename(nome)
+    ext = os.path.splitext(base)[1].lower() or "(sem extensão)"
+    inventario.setdefault("ext", Counter())[ext] += 1
+    ex = inventario.setdefault("exemplos", [])
+    if len(ex) < 12 and base and not any(e.endswith(ext) for e in ex if ext != "(sem extensão)"):
+        ex.append(nome)
+
+
+def iterar_logs(caminho: str, tmp_dir: str, rotulo: str = "", inventario: dict = None):
+    """Gera (caminho_logico, bytes) para cada log de urna, abrindo ZIPs internos se houver.
+    `inventario` recebe a contagem de extensões e exemplos de nomes, para diagnóstico."""
     rotulo = rotulo or os.path.basename(caminho)
     if not zipfile.is_zipfile(caminho):
-        if caminho.lower().endswith(".logjez") or rotulo.lower().endswith(".logjez"):
+        _anotar(inventario, rotulo)
+        if eh_nome_de_log(rotulo):
             with open(caminho, "rb") as f:
                 yield rotulo, f.read()
         return
     with zipfile.ZipFile(caminho) as z:
         for info in z.infolist():
             nome = info.filename
-            if nome.lower().endswith(".logjez"):
-                with z.open(info) as f:
-                    yield f"{rotulo}/{nome}", f.read()
-            elif nome.lower().endswith(".zip"):
+            if info.is_dir():
+                continue
+            _anotar(inventario, f"{rotulo}/{nome}")
+            if nome.lower().endswith(".zip"):
                 fd, interno = tempfile.mkstemp(suffix=".zip", dir=tmp_dir)
                 try:
                     with os.fdopen(fd, "wb") as out, z.open(info) as f:
                         shutil.copyfileobj(f, out, 4 << 20)
-                    yield from iterar_logs(interno, tmp_dir, f"{rotulo}/{nome}")
+                    yield from iterar_logs(interno, tmp_dir, f"{rotulo}/{nome}", inventario)
                 finally:
                     os.remove(interno)
+            elif eh_nome_de_log(nome):
+                with z.open(info) as f:
+                    yield f"{rotulo}/{nome}", f.read()
+
+
+def descrever_inventario(inventario: dict) -> str:
+    ext = inventario.get("ext") or {}
+    if not ext:
+        return "o arquivo está vazio ou não é um ZIP"
+    tipos = ", ".join(f"{n:,} {e}".replace(",", ".") for e, n in ext.most_common(8))
+    return f"conteúdo: {tipos}. Exemplos de nomes: {'; '.join(inventario.get('exemplos', [])[:8])}"
 
 
 def mediana_hora(valores):

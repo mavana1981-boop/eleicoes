@@ -153,12 +153,13 @@ def _processar_logs(tid, caminho, job, prog, obter_rodada):
 
         if zipfile.is_zipfile(caminho):
             with zipfile.ZipFile(caminho) as z:
-                total = sum(1 for n in z.namelist() if n.lower().endswith(".logjez")) or None
+                total = sum(1 for n in z.namelist() if logs.eh_nome_de_log(n)) or None
     base_prog = 0.3 if job["tipo"] == "logs_url" else 0.0
     estado = {"coletados": 0}
+    inventario = {}
 
     def gerador():
-        for rotulo, dados in logs.iterar_logs(caminho, TMP_DIR, nome):
+        for rotulo, dados in logs.iterar_logs(caminho, TMP_DIR, nome, inventario):
             cd, zona, sec = logs.identificar_secao(rotulo)
             uf = job.get("uf_forcada") or logs.detectar_uf(rotulo) or mapa_uf.get(cd) or job.get("uf")
             if not uf:
@@ -195,11 +196,11 @@ def _processar_logs(tid, caminho, job, prog, obter_rodada):
 
     if not secoes:
         detalhe = f" Erros: {'; '.join(erros[:3])}" if erros else ""
-        raise RuntimeError("Nenhum log de urna (.logjez) foi lido." + detalhe)
+        raise RuntimeError(f"Nenhum log de urna foi lido em {nome}: {logs.descrever_inventario(inventario)}." + detalhe)
     db.salvar_logs(obter_rodada(), list(secoes.values()))
 
     re_p = {k: re.compile(v) for k, v in padroes.items()}
-    diag = {"logs": feitos, "erros": erros[:10],
+    diag = {"logs": feitos, "erros": erros[:10], "inventario": logs.descrever_inventario(inventario),
             "mensagens": [[m, c, [k for k, rx in re_p.items() if rx.search(m)]] for m, c in mensagens.most_common(60)]}
     db.atualizar_tarefa(tid, diagnostico=json.dumps(diag, ensure_ascii=False))
 
